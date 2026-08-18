@@ -1,0 +1,45 @@
+# Supabase CLI configuration for the Smart Expiry & Pantry Waste Tracker.
+# Supabase is used ONLY as managed Postgres — no Auth, Storage, or Edge Functions.
+#
+# Schema is owned by FLYWAY (applied on Spring Boot boot). The CLI is used just
+# for a local Postgres/Studio environment:
+#   supabase start     # local Postgres on port 54322 + Studio on 54323
+# Then point the backend at it:
+#   DB_URL=jdbc:postgresql://localhost:54322/postgres
+#
+# Do NOT run `supabase db push` — there are no migrations in this folder and
+# Flyway already manages the schema.
+
+project_id = "smart-expiry-tracker"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[inbucket]
+enabled = true
+port = 54324
+
+# Email/password auth is handled by Spring Security — Supabase Auth is off.
+[auth]
+enabled = false
+
+[storage]
+enabled = false
+
+# No Edge Functions are used; this block only documents the default location.
+[edge_functions]
+enabled = false
+include_meta = true
+verify_jwt = true
