@@ -1,16 +1,20 @@
 package com.pantrytracker.email;
 
+import com.pantrytracker.notification.ExpiryDigestTemplate;
+import com.pantrytracker.user.User;
+import java.util.List;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
-import com.pantrytracker.notification.ExpiryDigestTemplate;
 
 /**
  * Sends email through the Resend HTTP API. When no API key is configured
- * (local dev) the digest is only logged — the job stays idempotent and safe.
+ * (local dev) the digest is only logged as counts — no item names, no email
+ * addresses, no tokens — and the job stays idempotent and safe.
  */
 @Component
 public class ResendClient {
@@ -33,9 +37,19 @@ public class ResendClient {
                 : null;
     }
 
-    public void sendDigest(java.util.List<ExpiryDigestTemplate.DigestLine> expiringSoon,
-                           java.util.List<ExpiryDigestTemplate.DigestLine> expired) {
+    /**
+     * Sends ONE digest to the given user containing ONLY that user's items.
+     * The recipient is always the user's own stored email — never a hardcoded
+     * address and never another user's mailbox.
+     */
+    public void sendDigest(User user, List<ExpiryDigestTemplate.DigestLine> expiringSoon,
+                           List<ExpiryDigestTemplate.DigestLine> expired) {
         if (expiringSoon.isEmpty() && expired.isEmpty()) {
+            return;
+        }
+        String recipient = user == null ? null : user.getEmail();
+        if (recipient == null || recipient.isBlank() || !recipient.contains("@")) {
+            log.warn("Digest skipped for a user with an invalid stored email address");
             return;
         }
         String html = ExpiryDigestTemplate.render(expiringSoon, expired);
@@ -48,9 +62,9 @@ public class ResendClient {
             restClient.post()
                     .uri("/emails")
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(java.util.Map.of(
+                    .body(Map.of(
                             "from", from,
-                            "to", java.util.List.of("user@pantrytracker.app"),
+                            "to", List.of(recipient),
                             "subject", "Pantry digest: " + expiringSoon.size()
                                     + " expiring, " + expired.size() + " expired",
                             "html", html))

@@ -1,6 +1,7 @@
 package com.pantrytracker.auth;
 
 import com.pantrytracker.common.BadRequestException;
+import com.pantrytracker.common.ConflictException;
 import com.pantrytracker.common.NotFoundException;
 import com.pantrytracker.user.User;
 import com.pantrytracker.user.UserRepository;
@@ -30,7 +31,7 @@ public class AuthService {
     public AuthDtos.TokenPair register(AuthDtos.RegisterRequest request) {
         String email = request.email().trim().toLowerCase(Locale.ROOT);
         if (userRepository.existsByEmailIgnoreCase(email)) {
-            throw new BadRequestException("An account with this email already exists");
+            throw new ConflictException("An account with this email already exists");
         }
         User user = new User(email, passwordEncoder.encode(request.password()),
                 request.displayName() == null ? null : request.displayName().trim());

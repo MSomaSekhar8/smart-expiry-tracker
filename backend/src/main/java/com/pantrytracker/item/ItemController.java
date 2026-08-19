@@ -3,6 +3,8 @@ package com.pantrytracker.item;
 import com.pantrytracker.auth.AuthenticatedUser;
 import com.pantrytracker.common.ApiResponse;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
@@ -69,11 +71,18 @@ public class ItemController {
     @PostMapping("/{id}/waste")
     public ItemDtos.Response markWasted(@AuthenticationPrincipal AuthenticatedUser principal,
                                         @PathVariable UUID id,
-                                        @RequestBody(required = false) WasteRequest request) {
+                                        @Valid @RequestBody(required = false) WasteRequest request) {
         BigDecimal quantity = request == null ? null : request.quantityWasted();
         BigDecimal cost = request == null ? null : request.estimatedCostLost();
         return itemService.markWasted(UUID.fromString(principal.id()), id, quantity, cost);
     }
 
-    public record WasteRequest(BigDecimal quantityWasted, BigDecimal estimatedCostLost) {}
+    public record WasteRequest(
+            @DecimalMin(value = "0", inclusive = false, message = "Quantity wasted must be positive")
+            @Digits(integer = 8, fraction = 2, message = "Quantity has too many digits")
+            BigDecimal quantityWasted,
+
+            @DecimalMin(value = "0", message = "Estimated cost can't be negative")
+            @Digits(integer = 8, fraction = 2, message = "Estimated cost has too many digits")
+            BigDecimal estimatedCostLost) {}
 }

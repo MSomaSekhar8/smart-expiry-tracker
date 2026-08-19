@@ -32,9 +32,9 @@ public class WasteLogController {
                         log.getId(),
                         log.getUser().getId(),
                         log.getItem() == null ? null : log.getItem().getId(),
-                        log.getItem() == null ? null : log.getItem().getName(),
+                        log.getItemName(),
                         log.getQuantityWasted(),
-                        log.getItem() == null ? null : log.getItem().getUnit(),
+                        log.getUnit(),
                         log.getEstimatedCostLost(),
                         log.getLoggedAt()))
                 .toList();

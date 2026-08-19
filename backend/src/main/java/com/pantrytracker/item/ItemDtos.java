@@ -1,8 +1,10 @@
 package com.pantrytracker.item;
 
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -25,13 +27,19 @@ public final class ItemDtos {
             UUID categoryId,
 
             @DecimalMin(value = "0", message = "Quantity can't be negative")
+            @Digits(integer = 8, fraction = 2, message = "Quantity has too many digits")
             BigDecimal quantity,
 
+            @Size(max = 20, message = "Unit is too long")
             String unit,
 
             LocalDate purchaseDate,
             LocalDate expiryDate,
+
+            @PositiveOrZero(message = "Shelf life can't be negative")
             Integer shelfLifeDays,
+
+            @Size(max = 5000, message = "Notes are too long")
             String notes) {}
 
     public record Response(

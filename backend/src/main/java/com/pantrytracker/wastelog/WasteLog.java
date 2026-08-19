@@ -30,6 +30,12 @@ public class WasteLog {
     @JoinColumn(name = "item_id")
     private Item item;
 
+    @Column(name = "item_name", length = 200)
+    private String itemName;
+
+    @Column(length = 20)
+    private String unit;
+
     @Column(name = "quantity_wasted", nullable = false, precision = 10, scale = 2)
     private BigDecimal quantityWasted;
 
@@ -44,6 +50,8 @@ public class WasteLog {
     public WasteLog(User user, Item item, BigDecimal quantityWasted, BigDecimal estimatedCostLost) {
         this.user = user;
         this.item = item;
+        this.itemName = item == null ? null : item.getName();
+        this.unit = item == null ? null : item.getUnit();
         this.quantityWasted = quantityWasted;
         this.estimatedCostLost = estimatedCostLost;
     }
@@ -58,6 +66,18 @@ public class WasteLog {
 
     public Item getItem() {
         return item;
+    }
+
+    public void setItem(Item item) {
+        this.item = item;
+    }
+
+    public String getItemName() {
+        return itemName;
+    }
+
+    public String getUnit() {
+        return unit;
     }
 
     public BigDecimal getQuantityWasted() {

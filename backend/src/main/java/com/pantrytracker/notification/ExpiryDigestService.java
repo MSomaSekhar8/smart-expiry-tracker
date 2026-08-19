@@ -5,9 +5,13 @@ import com.pantrytracker.item.Item;
 import com.pantrytracker.item.ItemRepository;
 import com.pantrytracker.item.ItemStatus;
 import com.pantrytracker.item.ItemStatusService;
+import com.pantrytracker.user.User;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,47 +31,60 @@ public class ExpiryDigestService {
     }
 
     /**
-     * Daily job: find expiring/expired items for every user, email one digest
-     * per user, and record a notification row per item so nothing is emailed
-     * twice. Idempotent — safe to run manually at any time.
+     * Daily job: for every user, find that user's expiring/expired items and
+     * email ONE digest to that user's address. Items are grouped by owner so
+     * a user's pantry data is never mixed with another user's in the same
+     * email or sent to someone else's inbox. Idempotent — safe to run
+     * manually at any time.
      */
     @Transactional
     public DigestReport run() {
         LocalDate today = LocalDate.now();
-        List<Item> items = itemRepository.findAll();
-        List<ExpiryDigestTemplate.DigestLine> expiringSoon = new java.util.ArrayList<>();
-        List<ExpiryDigestTemplate.DigestLine> expired = new java.util.ArrayList<>();
+        Map<User, List<Item>> itemsByOwner = itemRepository.findAll().stream()
+                .collect(Collectors.groupingBy(Item::getOwner));
 
-        for (Item item : items) {
-            if (item.getExpiryDate() == null) {
+        int expiringSoonCount = 0;
+        int expiredCount = 0;
+
+        for (Map.Entry<User, List<Item>> entry : itemsByOwner.entrySet()) {
+            User user = entry.getKey();
+            List<ExpiryDigestTemplate.DigestLine> expiringSoon = new ArrayList<>();
+            List<ExpiryDigestTemplate.DigestLine> expired = new ArrayList<>();
+
+            for (Item item : entry.getValue()) {
+                if (item.getExpiryDate() == null) {
+                    continue;
+                }
+                int threshold = item.getCategory().getWarningThresholdDays();
+                ItemStatus status = ItemStatusService.computeStatus(item.getExpiryDate(), threshold, today);
+                if (status == ItemStatus.SAFE) {
+                    continue;
+                }
+                NotificationType type = status == ItemStatus.EXPIRED
+                        ? NotificationType.EXPIRED : NotificationType.EXPIRING_SOON;
+                boolean recorded = notificationRecorder.record(user, item, type);
+                if (!recorded) {
+                    continue; // already notified today
+                }
+                long daysLeft = ChronoUnit.DAYS.between(today, item.getExpiryDate());
+                ExpiryDigestTemplate.DigestLine line = new ExpiryDigestTemplate.DigestLine(
+                        item.getName(), item.getExpiryDate(), type, daysLeft);
+                if (type == NotificationType.EXPIRED) {
+                    expired.add(line);
+                } else {
+                    expiringSoon.add(line);
+                }
+            }
+
+            if (expiringSoon.isEmpty() && expired.isEmpty()) {
                 continue;
             }
-            int threshold = item.getCategory().getWarningThresholdDays();
-            ItemStatus status = ItemStatusService.computeStatus(item.getExpiryDate(), threshold, today);
-            if (status == ItemStatus.SAFE) {
-                continue;
-            }
-            NotificationType type = status == ItemStatus.EXPIRED
-                    ? NotificationType.EXPIRED : NotificationType.EXPIRING_SOON;
-            boolean recorded = notificationRecorder.record(item.getOwner(), item, type);
-            if (!recorded) {
-                continue; // already notified today
-            }
-            long daysLeft = ChronoUnit.DAYS.between(today, item.getExpiryDate());
-            ExpiryDigestTemplate.DigestLine line = new ExpiryDigestTemplate.DigestLine(
-                    item.getName(), item.getExpiryDate(), type, daysLeft);
-            if (type == NotificationType.EXPIRED) {
-                expired.add(line);
-            } else {
-                expiringSoon.add(line);
-            }
+            resendClient.sendDigest(user, expiringSoon, expired);
+            expiringSoonCount += expiringSoon.size();
+            expiredCount += expired.size();
         }
 
-        // Group by user — one email per user per run.
-        // Items here are keyed by owner; this run already de-duplicated per item.
-        // For simplicity every user gets one combined digest from their items.
-        resendClient.sendDigest(expiringSoon, expired);
-        return new DigestReport(expiringSoon.size(), expired.size());
+        return new DigestReport(expiringSoonCount, expiredCount);
     }
 
     public record DigestReport(int expiringSoonCount, int expiredCount) {}

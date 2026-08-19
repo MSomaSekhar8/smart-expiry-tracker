@@ -42,14 +42,20 @@ public class ItemService {
                                         String status, String sort, String dir) {
         String searchLower = search == null ? null : search.trim().toLowerCase();
         String statusValue = status == null ? null : status.trim().toUpperCase();
+        if (statusValue != null) {
+            try {
+                ItemStatus.valueOf(statusValue);
+            } catch (IllegalArgumentException ex) {
+                throw new BadRequestException("Invalid status filter: " + statusValue);
+            }
+        }
 
         List<Item> items = itemRepository.findByOwnerIdOrderByExpiryDateAscNullsLast(userId)
                 .stream()
                 .filter(item -> searchLower == null
                         || item.getName().toLowerCase().contains(searchLower))
                 .filter(item -> categoryId == null || item.getCategory().getId().equals(categoryId))
-                .filter(item -> statusValue == null
-                        || computeStatus(item) == ItemStatus.valueOf(statusValue))
+                .filter(item -> statusValue == null || computeStatus(item) == ItemStatus.valueOf(statusValue))
                 .toList();
 
         Comparator<ItemDtos.Response> comparator = switch (sort == null ? "expiry" : sort) {
@@ -60,7 +66,7 @@ public class ItemService {
                     ItemDtos.Response::expiryDate,
                     Comparator.nullsLast(Comparator.naturalOrder()));
         };
-        if ("asc".equalsIgnoreCase(dir)) {
+        if ("desc".equalsIgnoreCase(dir)) {
             comparator = comparator.reversed();
         }
 
@@ -129,8 +135,16 @@ public class ItemService {
         if (quantityWasted.compareTo(BigDecimal.ZERO) <= 0) {
             throw new BadRequestException("Quantity wasted must be positive");
         }
-        wasteLogRepository.save(new WasteLog(item.getOwner(), item,
-                quantityWasted, estimatedCostLost));
+        WasteLog wasteLog = new WasteLog(item.getOwner(), item,
+                quantityWasted, estimatedCostLost);
+        // The item is about to be deleted in the same transaction. If the
+        // waste log still referenced it at flush time, Hibernate would throw
+        // a TransientObjectException (an insert must not reference an entity
+        // scheduled for removal). The historical snapshot columns (item_name,
+        // unit) are the source of truth; waste_log.item_id is nullable by
+        // design (ON DELETE SET NULL), so a null reference is schema-safe.
+        wasteLog.setItem(null);
+        wasteLogRepository.save(wasteLog);
         itemRepository.delete(item);
         return toResponse(item);
     }

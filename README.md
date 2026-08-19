@@ -9,13 +9,15 @@ how much money you're wasting on spoiled food and expired medicine.
   barcodes, and per-category shelf-life defaults.
 - **Expiry status** — items are flagged as expiring soon or expired based on the
   category's warning threshold (e.g. medicines warn 7 days out, perishables 1 day).
-- **Daily digest email** — a scheduled job (07:00) emails you a summary of items
-  expiring soon. Idempotent: a unique database index guarantees each item is
-  only notified once per day.
+- **Daily digest email** — a scheduled job (07:00) emails every user a
+  summary of that user's own items expiring soon (one email per user, sent
+  to the user's registered address). Idempotent: a unique database index
+  guarantees each item is only notified once per day.
 - **Barcode lookup** — scan or type a barcode; product info is fetched from
   Open Food Facts and cached server-side in Postgres.
-- **Waste analytics** — log thrown-away items with estimated cost lost; dashboard
-  and analytics pages show waste trends by category and over time.
+- **Waste analytics** — log thrown-away items with estimated cost lost; a
+  historical snapshot (item name + unit) is kept even after the item is
+  deleted, so the dashboard and analytics pages keep showing what was wasted.
 - **Authentication** — email/password registration and login with JWT access +
   refresh tokens (BCrypt-hashed passwords).
 
@@ -77,11 +79,14 @@ cd backend
 $env:DB_URL="jdbc:postgresql://<host>:5432/postgres"
 $env:DB_USERNAME="postgres"
 $env:DB_PASSWORD="<password>"
+$env:JWT_SECRET="<at-least-32-random-bytes>"
 mvn spring-boot:run
 ```
 
+The app refuses to start without `JWT_SECRET` (no built-in default).
+
 Flyway creates the schema on first startup (baseline version 0, then
-`V1__init.sql` and `V2__seed_categories.sql`).
+`V1__init.sql`, `V2__seed_categories.sql`, `V3__add_waste_snapshot.sql`).
 
 ### Frontend
 
@@ -101,12 +106,12 @@ proxy `/api` to the backend.
 | `DB_URL` | — | JDBC URL of the Postgres database |
 | `DB_USERNAME` | `postgres` | Database user |
 | `DB_PASSWORD` | `postgres` | Database password |
-| `JWT_SECRET` | dev-only | HS256 signing secret (≥32 bytes; change in production) |
+| `JWT_SECRET` | — (required, no default) | HS256 signing secret, at least 32 bytes; the app fails at startup if missing |
 | `JWT_ACCESS_TTL_MINUTES` | `60` | Access token lifetime |
 | `JWT_REFRESH_TTL_DAYS` | `14` | Refresh token lifetime |
-| `RESEND_API_KEY` | — | Resend API key for digest emails |
+| `RESEND_API_KEY` | — | Resend API key for digest emails (missing = digest dry-run, nothing sent) |
 | `RESEND_FROM` | `Pantry Tracker <onboarding@resend.dev>` | Email sender |
 | `DIGEST_CRON` | `0 0 7 * * *` | Daily digest schedule |
-| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed frontend origins |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed frontend origins (comma-separated allowlist) |
 | `FLYWAY_ENABLED` | `true` | Toggle Flyway migrations |
 | `PORT` | `8080` | Server port |

@@ -23,7 +23,7 @@ server:
 
 app:
   jwt:
-    secret: ${JWT_SECRET:dev-only-secret-change-me-0123456789abcdef-0123456789}
+    secret: ${JWT_SECRET}
     access-ttl-minutes: ${JWT_ACCESS_TTL_MINUTES:60}
     refresh-ttl-days: ${JWT_REFRESH_TTL_DAYS:14}
 

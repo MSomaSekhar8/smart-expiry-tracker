@@ -10,8 +10,8 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Marks an item as notified in its own REQUIRES_NEW transaction. If two
  * scheduled runs race, the second insert violates the unique index
- * (item_id, type, date(sent_at)) and is silently swallowed — the email is
- * never sent twice.
+ * (item_id, type, day) and is silently swallowed — the email is never
+ * sent twice.
  */
 @Component
 public class NotificationRecorder {

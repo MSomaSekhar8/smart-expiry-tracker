@@ -6,6 +6,7 @@ import com.pantrytracker.common.ApiResponse;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -57,7 +58,12 @@ public class SecurityConfig {
                     objectMapper.writeValue(response.getWriter(), new ApiResponse("Forbidden"));
                 }))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/auth/**", "/error").permitAll()
+                // Preflight requests are handled by the CORS filter; permit
+                // them explicitly so the security chain never rejects them.
+                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                // The ONLY public endpoints: auth (register/login/refresh),
+                // the minimal liveness probe, and the servlet error path.
+                .requestMatchers("/api/auth/**", "/api/health", "/error").permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated())
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);

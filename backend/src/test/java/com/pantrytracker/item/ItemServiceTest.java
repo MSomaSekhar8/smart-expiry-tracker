@@ -3,22 +3,28 @@ package com.pantrytracker.item;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.pantrytracker.category.Category;
 import com.pantrytracker.category.CategoryRepository;
+import com.pantrytracker.common.BadRequestException;
 import com.pantrytracker.common.NotFoundException;
 import com.pantrytracker.user.User;
 import com.pantrytracker.user.UserRepository;
+import com.pantrytracker.wastelog.WasteLog;
 import com.pantrytracker.wastelog.WasteLogRepository;
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.access.AccessDeniedException;
@@ -49,12 +55,17 @@ class ItemServiceTest {
     }
 
     private Item itemOwnedBy(UUID userId) {
+        return itemOwnedBy(userId, "Oat Milk", null);
+    }
+
+    private Item itemOwnedBy(UUID userId, String name, LocalDate expiry) {
         User owner = new User("user@example.com", "hash", "Test");
         ReflectionTestUtils.setField(owner, "id", userId);
         Category category = new Category("grocery", 30, 3);
         ReflectionTestUtils.setField(category, "id", UUID.randomUUID());
-        Item item = new Item(owner, category, "Oat Milk");
+        Item item = new Item(owner, category, name);
         ReflectionTestUtils.setField(item, "id", UUID.randomUUID());
+        item.setExpiryDate(expiry);
         return item;
     }
 
@@ -122,5 +133,174 @@ class ItemServiceTest {
         assertThat(response.status()).isEqualTo(ItemStatus.EXPIRING);
         assertThat(response.daysUntilExpiry()).isEqualTo(2L);
         assertThat(response.warningThresholdDays()).isEqualTo(3);
+    }
+
+    @Test
+    void getAnotherUsersItemThrowsAccessDenied() {
+        Item item = itemOwnedBy(ownerId);
+        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+
+        assertThatThrownBy(() -> itemService.get(otherUserId, item.getId()))
+                .isInstanceOf(AccessDeniedException.class);
+    }
+
+    @Test
+    void listAscendingSortsExpiryOldestFirst() {
+        Item later = itemOwnedBy(ownerId, "B", LocalDate.of(2026, 9, 10));
+        Item sooner = itemOwnedBy(ownerId, "A", LocalDate.of(2026, 8, 20));
+        when(itemRepository.findByOwnerIdOrderByExpiryDateAscNullsLast(ownerId))
+                .thenReturn(List.of(later, sooner));
+
+        List<ItemDtos.Response> result =
+                itemService.list(ownerId, null, null, null, "expiry", "asc");
+
+        assertThat(result).extracting(ItemDtos.Response::name).containsExactly("A", "B");
+    }
+
+    @Test
+    void listDescendingSortsExpiryNewestFirst() {
+        Item later = itemOwnedBy(ownerId, "B", LocalDate.of(2026, 9, 10));
+        Item sooner = itemOwnedBy(ownerId, "A", LocalDate.of(2026, 8, 20));
+        when(itemRepository.findByOwnerIdOrderByExpiryDateAscNullsLast(ownerId))
+                .thenReturn(List.of(sooner, later));
+
+        List<ItemDtos.Response> result =
+                itemService.list(ownerId, null, null, null, "expiry", "desc");
+
+        assertThat(result).extracting(ItemDtos.Response::name).containsExactly("B", "A");
+    }
+
+    @Test
+    void listAscendingNameSortsAlphabetically() {
+        Item zeta = itemOwnedBy(ownerId, "Zebra", LocalDate.of(2026, 9, 10));
+        Item alpha = itemOwnedBy(ownerId, "Alpha", LocalDate.of(2026, 8, 20));
+        when(itemRepository.findByOwnerIdOrderByExpiryDateAscNullsLast(ownerId))
+                .thenReturn(List.of(zeta, alpha));
+
+        List<ItemDtos.Response> result =
+                itemService.list(ownerId, null, null, null, "name", "asc");
+
+        assertThat(result).extracting(ItemDtos.Response::name).containsExactly("Alpha", "Zebra");
+    }
+
+    @Test
+    void listDescendingNameSortsReverseAlphabetically() {
+        Item zeta = itemOwnedBy(ownerId, "Zebra", LocalDate.of(2026, 9, 10));
+        Item alpha = itemOwnedBy(ownerId, "Alpha", LocalDate.of(2026, 8, 20));
+        when(itemRepository.findByOwnerIdOrderByExpiryDateAscNullsLast(ownerId))
+                .thenReturn(List.of(zeta, alpha));
+
+        List<ItemDtos.Response> result =
+                itemService.list(ownerId, null, null, null, "name", "DESC");
+
+        assertThat(result).extracting(ItemDtos.Response::name).containsExactly("Zebra", "Alpha");
+    }
+
+    @Test
+    void listWithInvalidStatusThrowsBadRequest() {
+        // Validation happens before any repository query.
+        assertThatThrownBy(() -> itemService.list(ownerId, null, null, "abc123", null, null))
+                .isInstanceOf(BadRequestException.class);
+        verify(itemRepository, never()).findByOwnerIdOrderByExpiryDateAscNullsLast(any());
+    }
+
+    @Test
+    void listFiltersToRequestedStatus() {
+        Item expiring = itemOwnedBy(ownerId, "Soon", LocalDate.now().plusDays(2));
+        Item safe = itemOwnedBy(ownerId, "Safe", LocalDate.now().plusDays(30));
+        when(itemRepository.findByOwnerIdOrderByExpiryDateAscNullsLast(ownerId))
+                .thenReturn(List.of(expiring, safe));
+
+        List<ItemDtos.Response> result =
+                itemService.list(ownerId, null, null, "EXPIRING", "expiry", "asc");
+
+        assertThat(result).extracting(ItemDtos.Response::name).containsExactly("Soon");
+    }
+
+    @Test
+    void markWastedSnapshotsItemNameAndUnitBeforeDeletion() {
+        Item item = itemOwnedBy(ownerId, "Rice", null);
+        item.setUnit("kg");
+        item.setQuantity(new BigDecimal("5"));
+        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+
+        itemService.markWasted(ownerId, item.getId(), new BigDecimal("5"), BigDecimal.ZERO);
+
+        ArgumentCaptor<WasteLog> captor = ArgumentCaptor.forClass(WasteLog.class);
+        verify(wasteLogRepository).save(captor.capture());
+        WasteLog saved = captor.getValue();
+        assertThat(saved.getItemName()).isEqualTo("Rice");
+        assertThat(saved.getUnit()).isEqualTo("kg");
+        assertThat(saved.getQuantityWasted()).isEqualByComparingTo("5");
+        assertThat(saved.getUser().getId()).isEqualTo(ownerId);
+        assertThat(saved.getItem()).isNull();
+        verify(itemRepository).delete(item);
+    }
+
+    @Test
+    void markWastedOwnItemSavesWasteLogAndDeletesItem() {
+        Item item = itemOwnedBy(ownerId, "Milk", null);
+        item.setQuantity(new BigDecimal("2"));
+        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+
+        ItemDtos.Response response = itemService.markWasted(ownerId, item.getId(),
+                new BigDecimal("2"), new BigDecimal("1.5"));
+
+        ArgumentCaptor<WasteLog> captor = ArgumentCaptor.forClass(WasteLog.class);
+        verify(wasteLogRepository).save(captor.capture());
+        WasteLog saved = captor.getValue();
+        assertThat(saved.getUser().getId()).isEqualTo(ownerId);
+        assertThat(saved.getItemName()).isEqualTo("Milk");
+        assertThat(saved.getUnit()).isEqualTo("unit");
+        assertThat(saved.getQuantityWasted()).isEqualByComparingTo("2");
+        assertThat(saved.getEstimatedCostLost()).isEqualByComparingTo("1.5");
+        assertThat(saved.getItem()).isNull();
+        verify(itemRepository).delete(item);
+        assertThat(response.id()).isEqualTo(item.getId());
+    }
+
+    @Test
+    void markWastedDefaultsQuantityToItemQuantity() {
+        Item item = itemOwnedBy(ownerId, "Rice", null);
+        item.setQuantity(new BigDecimal("5"));
+        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+
+        itemService.markWasted(ownerId, item.getId(), null, null);
+
+        ArgumentCaptor<WasteLog> captor = ArgumentCaptor.forClass(WasteLog.class);
+        verify(wasteLogRepository).save(captor.capture());
+        assertThat(captor.getValue().getQuantityWasted()).isEqualByComparingTo("5");
+        verify(itemRepository).delete(item);
+    }
+
+    @Test
+    void markWastedWithNonPositiveQuantityThrowsBadRequest() {
+        Item item = itemOwnedBy(ownerId, "Milk", null);
+        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+
+        assertThatThrownBy(() -> itemService.markWasted(ownerId, item.getId(),
+                BigDecimal.ZERO, null))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(wasteLogRepository, never()).save(any());
+        verify(itemRepository, never()).delete(any());
+    }
+
+    @Test
+    void markWastedFailureLeavesNoPartialState() {
+        // If persisting the waste log fails, the item must NOT be deleted:
+        // the method throws before delete() is reached, and @Transactional
+        // would roll the whole operation back at the database level.
+        Item item = itemOwnedBy(ownerId, "Milk", null);
+        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+        doThrow(new RuntimeException("simulated DB failure"))
+                .when(wasteLogRepository).save(any(WasteLog.class));
+
+        assertThatThrownBy(() -> itemService.markWasted(ownerId, item.getId(),
+                BigDecimal.ONE, null))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("simulated DB failure");
+
+        verify(itemRepository, never()).delete(any());
     }
 }
