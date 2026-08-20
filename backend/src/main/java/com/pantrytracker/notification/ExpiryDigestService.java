@@ -13,7 +13,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class ExpiryDigestService {
@@ -36,20 +35,54 @@ public class ExpiryDigestService {
      * a user's pantry data is never mixed with another user's in the same
      * email or sent to someone else's inbox. Idempotent — safe to run
      * manually at any time.
+     *
+     * Flow: prepare the digest (query only) → send the email (outside any
+     * transaction) → record the notification ONLY when the send succeeded.
+     * A failed send is never recorded, so it is retried on the next run, and
+     * one user's send failure never aborts the rest of the batch.
      */
-    @Transactional
     public DigestReport run() {
-        LocalDate today = LocalDate.now();
-        Map<User, List<Item>> itemsByOwner = itemRepository.findAll().stream()
-                .collect(Collectors.groupingBy(Item::getOwner));
+        List<DigestPlan> plans = buildPlans();
 
         int expiringSoonCount = 0;
         int expiredCount = 0;
 
+        for (DigestPlan plan : plans) {
+            boolean sent = resendClient.sendDigest(
+                    plan.user(), plan.expiringSoon(), plan.expired());
+            if (!sent) {
+                continue; // not recorded → retried on a later run
+            }
+            for (PlannedItem planned : plan.items()) {
+                if (notificationRecorder.record(plan.user(), planned.item(), planned.type())) {
+                    if (planned.type() == NotificationType.EXPIRED) {
+                        expiredCount++;
+                    } else {
+                        expiringSoonCount++;
+                    }
+                }
+            }
+        }
+
+        return new DigestReport(expiringSoonCount, expiredCount);
+    }
+
+    /**
+     * Read phase only — no email, no writes. Uses the eager query so the
+     * grouped data can be used outside a transaction, and skips items that
+     * were already notified today so no duplicate email is ever sent.
+     */
+    private List<DigestPlan> buildPlans() {
+        LocalDate today = LocalDate.now();
+        Map<User, List<Item>> itemsByOwner = itemRepository.findAllWithOwnerAndCategory().stream()
+                .collect(Collectors.groupingBy(Item::getOwner));
+
+        List<DigestPlan> plans = new ArrayList<>();
         for (Map.Entry<User, List<Item>> entry : itemsByOwner.entrySet()) {
             User user = entry.getKey();
             List<ExpiryDigestTemplate.DigestLine> expiringSoon = new ArrayList<>();
             List<ExpiryDigestTemplate.DigestLine> expired = new ArrayList<>();
+            List<PlannedItem> items = new ArrayList<>();
 
             for (Item item : entry.getValue()) {
                 if (item.getExpiryDate() == null) {
@@ -62,9 +95,8 @@ public class ExpiryDigestService {
                 }
                 NotificationType type = status == ItemStatus.EXPIRED
                         ? NotificationType.EXPIRED : NotificationType.EXPIRING_SOON;
-                boolean recorded = notificationRecorder.record(user, item, type);
-                if (!recorded) {
-                    continue; // already notified today
+                if (notificationRecorder.alreadyNotifiedToday(item, type)) {
+                    continue; // duplicate — never emailed twice
                 }
                 long daysLeft = ChronoUnit.DAYS.between(today, item.getExpiryDate());
                 ExpiryDigestTemplate.DigestLine line = new ExpiryDigestTemplate.DigestLine(
@@ -74,18 +106,22 @@ public class ExpiryDigestService {
                 } else {
                     expiringSoon.add(line);
                 }
+                items.add(new PlannedItem(item, type));
             }
 
-            if (expiringSoon.isEmpty() && expired.isEmpty()) {
+            if (items.isEmpty()) {
                 continue;
             }
-            resendClient.sendDigest(user, expiringSoon, expired);
-            expiringSoonCount += expiringSoon.size();
-            expiredCount += expired.size();
+            plans.add(new DigestPlan(user, items, expiringSoon, expired));
         }
-
-        return new DigestReport(expiringSoonCount, expiredCount);
+        return plans;
     }
+
+    private record PlannedItem(Item item, NotificationType type) {}
+
+    private record DigestPlan(User user, List<PlannedItem> items,
+                              List<ExpiryDigestTemplate.DigestLine> expiringSoon,
+                              List<ExpiryDigestTemplate.DigestLine> expired) {}
 
     public record DigestReport(int expiringSoonCount, int expiredCount) {}
 }

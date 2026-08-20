@@ -21,9 +21,14 @@ export const tokenStore = {
   },
 }
 
-const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080/api',
-})
+const baseURL = import.meta.env.VITE_API_BASE_URL
+if (!baseURL) {
+  throw new Error(
+    'VITE_API_BASE_URL is not set. Create a .env file from .env.example (VITE_API_BASE_URL=http://localhost:8080/api for local development) or set it in the build environment.',
+  )
+}
+
+const api = axios.create({ baseURL })
 
 api.interceptors.request.use((config) => {
   const token = tokenStore.access

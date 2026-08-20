@@ -76,14 +76,16 @@ smart-expiry-tracker/
 ```bash
 cd backend
 # set required env vars
-$env:DB_URL="jdbc:postgresql://<host>:5432/postgres"
+$env:DB_URL="jdbc:postgresql://<host>:5432/postgres?sslmode=require"
 $env:DB_USERNAME="postgres"
 $env:DB_PASSWORD="<password>"
 $env:JWT_SECRET="<at-least-32-random-bytes>"
 mvn spring-boot:run
 ```
 
-The app refuses to start without `JWT_SECRET` (no built-in default).
+The app refuses to start without `DB_URL` (must be a JDBC PostgreSQL URL —
+for Supabase, prefix the connection string with `jdbc:`), `DB_PASSWORD`, or
+`JWT_SECRET` (no built-in defaults).
 
 Flyway creates the schema on first startup (baseline version 0, then
 `V1__init.sql`, `V2__seed_categories.sql`, `V3__add_waste_snapshot.sql`).
@@ -92,20 +94,21 @@ Flyway creates the schema on first startup (baseline version 0, then
 
 ```bash
 npm install
+# create .env from .env.example (VITE_API_BASE_URL=http://localhost:8080/api)
 npm run dev
 ```
 
-The app expects the API at `http://localhost:8080/api` (set
-`VITE_API_BASE_URL` in `.env` to override). The Vite dev server is configured to
-proxy `/api` to the backend.
+The app expects the API at the URL given by `VITE_API_BASE_URL` (default
+`http://localhost:8080/api` in the local `.env`). The build fails if
+`VITE_API_BASE_URL` is not set — set it to your deployed backend URL in CI/CD.
 
 ## Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DB_URL` | — | JDBC URL of the Postgres database |
+| `DB_URL` | — (required, no default) | JDBC URL of the Postgres database. Must start with `jdbc:postgresql:` — Supabase connection strings (`postgresql://...`) need the `jdbc:` prefix, e.g. `jdbc:postgresql://<host>:5432/postgres?sslmode=require` |
 | `DB_USERNAME` | `postgres` | Database user |
-| `DB_PASSWORD` | `postgres` | Database password |
+| `DB_PASSWORD` | — (required, no default) | Database password; set in your deployment's secret store |
 | `JWT_SECRET` | — (required, no default) | HS256 signing secret, at least 32 bytes; the app fails at startup if missing |
 | `JWT_ACCESS_TTL_MINUTES` | `60` | Access token lifetime |
 | `JWT_REFRESH_TTL_DAYS` | `14` | Refresh token lifetime |
@@ -113,5 +116,6 @@ proxy `/api` to the backend.
 | `RESEND_FROM` | `Pantry Tracker <onboarding@resend.dev>` | Email sender |
 | `DIGEST_CRON` | `0 0 7 * * *` | Daily digest schedule |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed frontend origins (comma-separated allowlist) |
-| `FLYWAY_ENABLED` | `true` | Toggle Flyway migrations |
 | `PORT` | `8080` | Server port |
+| `FLYWAY_ENABLED` | `true` | Toggle Flyway migrations |
+| `VITE_API_BASE_URL` | — (required for the frontend build) | Backend base URL, e.g. `http://localhost:8080/api` locally or `https://api.example.com/api` in production; the build fails if unset |

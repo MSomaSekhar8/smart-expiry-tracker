@@ -3,6 +3,7 @@ package com.pantrytracker.notification;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -17,6 +18,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Function;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -36,6 +38,7 @@ class ExpiryDigestServiceTest {
 
     private ExpiryDigestService digestService;
     private final List<DigestCall> calls = new ArrayList<>();
+    private Function<User, Boolean> sendResult = user -> true;
 
     private record DigestCall(User user,
                               List<ExpiryDigestTemplate.DigestLine> expiringSoon,
@@ -49,7 +52,7 @@ class ExpiryDigestServiceTest {
                     invocation.getArgument(0),
                     invocation.getArgument(1),
                     invocation.getArgument(2)));
-            return null;
+            return sendResult.apply(invocation.getArgument(0));
         }).when(resendClient).sendDigest(any(), anyList(), anyList());
     }
 
@@ -73,7 +76,8 @@ class ExpiryDigestServiceTest {
         Item aExpiring = itemFor(userA, "A-Milk", LocalDate.now().plusDays(2));
         Item aSafe = itemFor(userA, "A-Safe", LocalDate.now().plusDays(30));
         Item bExpired = itemFor(userB, "B-Pills", LocalDate.now().minusDays(1));
-        when(itemRepository.findAll()).thenReturn(List.of(aExpiring, aSafe, bExpired));
+        when(itemRepository.findAllWithOwnerAndCategory()).thenReturn(List.of(aExpiring, aSafe, bExpired));
+        when(notificationRecorder.alreadyNotifiedToday(any(), any())).thenReturn(false);
         when(notificationRecorder.record(any(), any(), any())).thenReturn(true);
 
         ExpiryDigestService.DigestReport report = digestService.run();
@@ -103,7 +107,8 @@ class ExpiryDigestServiceTest {
         User userB = user("b@example.com");
         Item aItem = itemFor(userA, "A-Milk", LocalDate.now().plusDays(2));
         Item bItem = itemFor(userB, "B-Pills", LocalDate.now().minusDays(1));
-        when(itemRepository.findAll()).thenReturn(List.of(aItem, bItem));
+        when(itemRepository.findAllWithOwnerAndCategory()).thenReturn(List.of(aItem, bItem));
+        when(notificationRecorder.alreadyNotifiedToday(any(), any())).thenReturn(false);
         when(notificationRecorder.record(any(), any(), any())).thenReturn(true);
 
         digestService.run();
@@ -125,9 +130,10 @@ class ExpiryDigestServiceTest {
     void recipientIsAlwaysTheUsersOwnEmail() {
         User userA = user("a@example.com");
         User userB = user("b@example.com");
-        when(itemRepository.findAll()).thenReturn(List.of(
+        when(itemRepository.findAllWithOwnerAndCategory()).thenReturn(List.of(
                 itemFor(userA, "A-Milk", LocalDate.now().plusDays(2)),
                 itemFor(userB, "B-Pills", LocalDate.now().minusDays(1))));
+        when(notificationRecorder.alreadyNotifiedToday(any(), any())).thenReturn(false);
         when(notificationRecorder.record(any(), any(), any())).thenReturn(true);
 
         digestService.run();
@@ -142,26 +148,89 @@ class ExpiryDigestServiceTest {
     void alreadyNotifiedItemsAreNotEmailedAgain() {
         User userA = user("a@example.com");
         Item notified = itemFor(userA, "A-Milk", LocalDate.now().plusDays(2));
-        when(itemRepository.findAll()).thenReturn(List.of(notified));
-        when(notificationRecorder.record(any(), any(), any())).thenReturn(false);
-
-        ExpiryDigestService.DigestReport report = digestService.run();
-
-        assertThat(report.expiringSoonCount()).isZero();
-        assertThat(calls).isEmpty();
-        verify(resendClient, never()).sendDigest(any(), anyList(), anyList());
-    }
-
-    @Test
-    void safeItemsAreNotEmailed() {
-        User userA = user("a@example.com");
-        Item safe = itemFor(userA, "A-Safe", LocalDate.now().plusDays(30));
-        when(itemRepository.findAll()).thenReturn(List.of(safe));
+        when(itemRepository.findAllWithOwnerAndCategory()).thenReturn(List.of(notified));
+        when(notificationRecorder.alreadyNotifiedToday(any(), any())).thenReturn(true);
 
         ExpiryDigestService.DigestReport report = digestService.run();
 
         assertThat(report.expiringSoonCount()).isZero();
         assertThat(report.expiredCount()).isZero();
         assertThat(calls).isEmpty();
+        verify(resendClient, never()).sendDigest(any(), anyList(), anyList());
+        verify(notificationRecorder, never()).record(any(), any(), any());
+    }
+
+    @Test
+    void safeItemsAreNotEmailed() {
+        User userA = user("a@example.com");
+        Item safe = itemFor(userA, "A-Safe", LocalDate.now().plusDays(30));
+        when(itemRepository.findAllWithOwnerAndCategory()).thenReturn(List.of(safe));
+
+        ExpiryDigestService.DigestReport report = digestService.run();
+
+        assertThat(report.expiringSoonCount()).isZero();
+        assertThat(report.expiredCount()).isZero();
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
+    void successfulSendRecordsNotificationForEverySentItem() {
+        User userA = user("a@example.com");
+        Item aExpiring = itemFor(userA, "A-Milk", LocalDate.now().plusDays(2));
+        Item aExpired = itemFor(userA, "A-Bread", LocalDate.now().minusDays(1));
+        when(itemRepository.findAllWithOwnerAndCategory()).thenReturn(List.of(aExpiring, aExpired));
+        when(notificationRecorder.alreadyNotifiedToday(any(), any())).thenReturn(false);
+        when(notificationRecorder.record(any(), any(), any())).thenReturn(true);
+
+        ExpiryDigestService.DigestReport report = digestService.run();
+
+        assertThat(report.expiringSoonCount()).isEqualTo(1);
+        assertThat(report.expiredCount()).isEqualTo(1);
+        assertThat(calls).hasSize(1);
+        verify(notificationRecorder).record(eq(userA), eq(aExpiring), eq(NotificationType.EXPIRING_SOON));
+        verify(notificationRecorder).record(eq(userA), eq(aExpired), eq(NotificationType.EXPIRED));
+    }
+
+    @Test
+    void failedSendRecordsNothingButOtherUsersStillGetEmails() {
+        User userA = user("a@example.com");
+        User userB = user("b@example.com");
+        Item aExpiring = itemFor(userA, "A-Milk", LocalDate.now().plusDays(2));
+        Item bExpired = itemFor(userB, "B-Pills", LocalDate.now().minusDays(1));
+        when(itemRepository.findAllWithOwnerAndCategory()).thenReturn(List.of(aExpiring, bExpired));
+        when(notificationRecorder.alreadyNotifiedToday(any(), any())).thenReturn(false);
+        when(notificationRecorder.record(any(), any(), any())).thenReturn(true);
+        sendResult = user -> !"b@example.com".equals(user.getEmail());
+
+        ExpiryDigestService.DigestReport report = digestService.run();
+
+        assertThat(report.expiringSoonCount()).isEqualTo(1);
+        assertThat(report.expiredCount()).isZero();
+        assertThat(calls).hasSize(2);
+        verify(notificationRecorder).record(eq(userA), eq(aExpiring), eq(NotificationType.EXPIRING_SOON));
+        verify(notificationRecorder, never()).record(eq(userB), eq(bExpired), eq(NotificationType.EXPIRED));
+    }
+
+    @Test
+    void duplicateRecordDoesNotAbortTheDigestBatch() {
+        User userA = user("a@example.com");
+        User userB = user("b@example.com");
+        Item dupExpiring = itemFor(userA, "A-Milk", LocalDate.now().plusDays(2));
+        Item aExpired = itemFor(userA, "A-Bread", LocalDate.now().minusDays(1));
+        Item bExpiring = itemFor(userB, "B-Cheese", LocalDate.now().plusDays(3));
+        when(itemRepository.findAllWithOwnerAndCategory()).thenReturn(List.of(dupExpiring, aExpired, bExpiring));
+        when(notificationRecorder.alreadyNotifiedToday(any(), any())).thenReturn(false);
+        when(notificationRecorder.record(eq(userA), eq(dupExpiring), eq(NotificationType.EXPIRING_SOON)))
+                .thenReturn(false); // a racing run recorded it first
+        when(notificationRecorder.record(eq(userA), eq(aExpired), eq(NotificationType.EXPIRED))).thenReturn(true);
+        when(notificationRecorder.record(eq(userB), eq(bExpiring), eq(NotificationType.EXPIRING_SOON))).thenReturn(true);
+
+        ExpiryDigestService.DigestReport report = digestService.run();
+
+        assertThat(report.expiringSoonCount()).isEqualTo(1);
+        assertThat(report.expiredCount()).isEqualTo(1);
+        assertThat(calls).hasSize(2);
+        verify(notificationRecorder).record(eq(userA), eq(aExpired), eq(NotificationType.EXPIRED));
+        verify(notificationRecorder).record(eq(userB), eq(bExpiring), eq(NotificationType.EXPIRING_SOON));
     }
 }
