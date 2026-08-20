@@ -2,6 +2,7 @@ package com.pantrytracker.config;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
@@ -15,9 +16,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.pantrytracker.auth.AuthenticatedUser;
 import com.pantrytracker.auth.AuthController;
 import com.pantrytracker.auth.AuthDtos;
+import com.pantrytracker.auth.AuthRateLimiter;
 import com.pantrytracker.auth.AuthService;
 import com.pantrytracker.auth.JwtService;
 import com.pantrytracker.common.HealthController;
+import com.pantrytracker.common.TooManyRequestsException;
 import com.pantrytracker.item.ItemController;
 import com.pantrytracker.item.ItemService;
 import com.pantrytracker.notification.DigestController;
@@ -38,14 +41,16 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 @WebMvcTest({ItemController.class, WasteLogController.class, HealthController.class,
         DigestController.class, AuthController.class})
-@Import({SecurityConfig.class, CorsConfig.class})
+@Import({SecurityConfig.class, CorsConfig.class, AuthRateLimiter.class})
 class SecurityMvcTest {
 
     @Autowired
@@ -205,5 +210,119 @@ class SecurityMvcTest {
         mockMvc.perform(get("/api/does-not-exist")
                         .with(user("u").roles("USER")))
                 .andExpect(status().isNotFound());
+    }
+
+    private MockHttpServletRequestBuilder login(String ip) {
+        return post("/api/auth/login")
+                .header("X-Forwarded-For", ip)
+                .contentType("application/json")
+                .content("{\"email\":\"a@example.com\",\"password\":\"secret123\"}");
+    }
+
+    private MockHttpServletRequestBuilder register(String ip) {
+        return post("/api/auth/register")
+                .header("X-Forwarded-For", ip)
+                .contentType("application/json")
+                .content("{\"email\":\"a@example.com\",\"password\":\"secret123\"}");
+    }
+
+    private MockHttpServletRequestBuilder refresh(String ip) {
+        return post("/api/auth/refresh")
+                .header("X-Forwarded-For", ip)
+                .contentType("application/json")
+                .content("{\"refreshToken\":\"some-token\"}");
+    }
+
+    private AuthDtos.TokenPair tokenPair() {
+        return new AuthDtos.TokenPair("access", "refresh",
+                new AuthDtos.UserView(UUID.randomUUID(), "a@example.com", null, "USER"));
+    }
+
+    @Test
+    void loginRateLimitsTheSixthAttemptPerIpWithGenericMessage() throws Exception {
+        when(authService.login(any())).thenReturn(tokenPair());
+
+        for (int i = 0; i < 5; i++) {
+            mockMvc.perform(login("10.1.0.1")).andExpect(status().isOk());
+        }
+        mockMvc.perform(login("10.1.0.1"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.message").value(TooManyRequestsException.MESSAGE));
+        verify(authService, times(5)).login(any());
+    }
+
+    @Test
+    void registerRateLimitsTheFourthAttemptPerIp() throws Exception {
+        when(authService.register(any())).thenReturn(tokenPair());
+
+        for (int i = 0; i < 3; i++) {
+            mockMvc.perform(register("10.1.0.2")).andExpect(status().isCreated());
+        }
+        mockMvc.perform(register("10.1.0.2"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.message").value(TooManyRequestsException.MESSAGE));
+        verify(authService, times(3)).register(any());
+    }
+
+    @Test
+    void refreshRateLimitsTheEleventhAttemptPerIp() throws Exception {
+        when(authService.refresh(any())).thenReturn(tokenPair());
+
+        for (int i = 0; i < 10; i++) {
+            mockMvc.perform(refresh("10.1.0.3")).andExpect(status().isOk());
+        }
+        mockMvc.perform(refresh("10.1.0.3"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.message").value(TooManyRequestsException.MESSAGE));
+        verify(authService, times(10)).refresh(any());
+    }
+
+    @Test
+    void rateLimitsAreIndependentPerIp() throws Exception {
+        when(authService.login(any())).thenReturn(tokenPair());
+
+        for (int i = 0; i < 5; i++) {
+            mockMvc.perform(login("10.1.0.4")).andExpect(status().isOk());
+        }
+        mockMvc.perform(login("10.1.0.4")).andExpect(status().isTooManyRequests());
+        mockMvc.perform(login("10.1.0.5")).andExpect(status().isOk());
+    }
+
+    @Test
+    void rateLimitingDoesNotAffectHealthOrAuthenticatedEndpoints() throws Exception {
+        when(authService.login(any())).thenReturn(tokenPair());
+        for (int i = 0; i < 5; i++) {
+            mockMvc.perform(login("10.1.0.6")).andExpect(status().isOk());
+        }
+        mockMvc.perform(login("10.1.0.6")).andExpect(status().isTooManyRequests());
+
+        mockMvc.perform(get("/api/health")).andExpect(status().isOk());
+
+        User user = userWithId("b@example.com");
+        when(itemService.list(eq(user.getId()), any(), any(), any(), any(), any()))
+                .thenReturn(List.of());
+        mockMvc.perform(get("/api/items").with(authentication(authed(user))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void invalidCredentialsStillReturnTheExistingGenericError() throws Exception {
+        when(authService.login(any()))
+                .thenThrow(new BadCredentialsException("Invalid email or password"));
+
+        mockMvc.perform(login("10.1.0.7"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Invalid email or password"));
+    }
+
+    @Test
+    void successfulLoginStillReturnsTokens() throws Exception {
+        when(authService.login(any())).thenReturn(tokenPair());
+
+        mockMvc.perform(login("10.1.0.8"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").value("access"))
+                .andExpect(jsonPath("$.refreshToken").value("refresh"))
+                .andExpect(jsonPath("$.user.email").value("a@example.com"));
     }
 }
