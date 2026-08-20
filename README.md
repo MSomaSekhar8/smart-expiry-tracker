@@ -1,130 +1,163 @@
 # Smart Expiry & Pantry Waste Tracker
 
-Track what's in your pantry, get an email before things expire, and see exactly
-how much money you're wasting on spoiled food and expired medicine.
+Never waste food or medicine again. Track what's in your pantry, get a daily
+email before things expire, and see exactly how much money you're losing to
+spoiled food and expired medicine — a full-stack web app with a React SPA, a
+Spring Boot API, and PostgreSQL, all deployed to the cloud.
 
-## Features
+## 🚀 Live Demo
 
-- **Item tracking** — add, edit, and delete items with expiry dates, quantities,
-  barcodes, and per-category shelf-life defaults.
-- **Expiry status** — items are flagged as expiring soon or expired based on the
-  category's warning threshold (e.g. medicines warn 7 days out, perishables 1 day).
-- **Daily digest email** — a scheduled job (07:00) emails every user a
-  summary of that user's own items expiring soon (one email per user, sent
-  to the user's registered address). Idempotent: a unique database index
-  guarantees each item is only notified once per day.
-- **Barcode lookup** — scan or type a barcode; product info is fetched from
-  Open Food Facts and cached server-side in Postgres.
-- **Waste analytics** — log thrown-away items with estimated cost lost; a
-  historical snapshot (item name + unit) is kept even after the item is
-  deleted, so the dashboard and analytics pages keep showing what was wasted.
-- **Authentication** — email/password registration and login with JWT access +
-  refresh tokens (BCrypt-hashed passwords). Access tokens are kept in browser
-  memory only (never localStorage/sessionStorage); refresh tokens travel in an
-  HttpOnly cookie (`refresh_token`, `Path=/api/auth`) and are rotated on every
-  refresh, with generation-based revocation on logout.
+| | |
+|---|---|
+| **Frontend** | https://smart-expiry-tracker-kappa.vercel.app |
+| **Backend** | https://smart-expiry-tracker-pn5i.onrender.com |
+| **API** | https://smart-expiry-tracker-pn5i.onrender.com/api |
 
-## Architecture
+(No secrets are included in this repository — all configuration is
+documented as environment variable names only.)
 
-- **Backend** — Java 21 + Spring Boot 3.5.16 (Web, Security, Data JPA, Validation,
-  Scheduling, WebFlux) in `backend/`.
-- **Database** — Supabase is used **only as managed Postgres**. No Supabase Auth,
-  no RLS, no Edge Functions. The schema is owned and versioned by **Flyway**
-  (`backend/src/main/resources/db/migration`), and authorization happens in the
-  Spring service layer (ownership checks + `@PreAuthorize`).
-- **Scheduled jobs** — Spring `@Scheduled` runs the daily digest via Resend.
-- **Frontend** — React 19 + Vite + TypeScript + Tailwind v4 + shadcn-style
-  components + Chart.js in the repo root. Talks to the Spring API with axios
-  (JWT in the `Authorization` header, automatic single-flight refresh on 401).
+---
 
-## Project layout
+## 1. Overview
+
+**What it does** — users register, build a personal pantry inventory with
+expiry dates, and the app automatically classifies every item as safe /
+expiring soon / expired using a warning window configured per category
+(medicines warn 7 days out, perishables 1 day).
+
+**Problem it solves** — expiry dates are invisible until it's too late, and
+households never measure what they throw away. This app provides proactive
+email warnings and quantified waste analytics.
+
+**Target users** — households reducing food/medicine waste, caregivers, and
+anyone managing short-shelf-life items.
+
+**Main purpose** — Track → Warn → Quantify: keep an inventory, get warned
+before things expire, and see the money lost to waste.
+
+---
+
+## 2. Features
+
+### 🔐 Authentication
+- Email/password registration & login (BCrypt-hashed passwords)
+- JWT access tokens (60 min) kept in browser memory only
+- Refresh tokens (14 days) in an HttpOnly cookie, **rotated on every use**
+  with generation-based revocation on logout
+- Automatic session restore and single-flight token refresh on 401
+
+### 🧺 Pantry Management
+- Add / edit / delete items with name, category, quantity, unit, purchase &
+  expiry dates, shelf life, and notes
+- Search (debounced), category & status filters, 4 sort keys
+- Responsive list — table on desktop, cards on mobile
+- Unit suggestions per category; shelf-life auto-suggested from dates
+
+### ⏰ Expiry Tracking
+- Live status per item: `SAFE` / `EXPIRING` / `EXPIRED`
+- Per-category warning windows (grocery 3, medicine 7, perishable 1 day)
+- Dashboard "Needs attention" list and summary cards
+
+### 🗂️ Categories
+- Reference data seeded by migration: grocery, medicine, perishable
+
+### 🗑️ Waste Management
+- Mark items as wasted (whole or partial) with an estimated cost lost
+- Historical snapshot (name + unit) survives item deletion
+- Recent-waste feed on the dashboard
+
+### 📊 Analytics
+- Monthly waste trend chart + totals (items wasted, cost lost)
+- 3 / 6 / 12-month ranges, monthly breakdown table, category donut
+
+### 📷 Barcode
+- Camera scanning with confirmation logic (no flaky reads)
+- Barcode photo decode and manual entry with EAN-13/EAN-8/UPC-A validation
+- Product lookup via Open Food Facts, **cached in PostgreSQL** so repeat
+  scans are instant
+
+### 📧 Notifications & Email
+- Daily digest at 07:00 — one email per user listing only their own
+  expiring/expired items
+- Idempotent (each item is notified at most once per UTC day, even if job
+  runs race)
+- Dry-run mode without an API key; admin "Test digest now" trigger
+
+---
+
+## 3. Application Workflow
+
+```mermaid
+flowchart TD
+    A[Register] --> B[Login]
+    B --> C[Dashboard]
+    C --> D[Add Pantry Item]
+    D --> E[Scan Barcode / Manual Entry]
+    E --> F[Track Expiry Status]
+    F --> G[Expiry Warning / Daily Digest Email]
+    G --> H[Item Wasted?]
+    H -->|Yes| I[Waste Logged + Item Removed]
+    I --> J[Waste Analytics / Dashboard]
+    H -->|No| F
+```
+
+---
+
+## Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React 19 · TypeScript · Vite 6 · Tailwind CSS 4 · Chart.js · html5-qrcode |
+| Backend | Java 21 · Spring Boot 3.5.16 · Spring Security · JPA · Flyway · JJWT |
+| Database | PostgreSQL (Supabase, managed) |
+| Email | Resend |
+| Barcode data | Open Food Facts |
+| Deployment | Render (API, Docker) · Vercel (SPA) |
+
+## Project Structure
 
 ```
-smart-expiry-tracker/
-├── backend/                        # Spring Boot application
-│   └── src/main/
-│       ├── java/com/pantrytracker/
-│       │   ├── auth/               # JWT issue/validate, filter, login/register/refresh
-│       │   ├── user/               # users entity (roles USER / ADMIN)
-│       │   ├── item/               # items, expiry status logic
-│       │   ├── category/           # per-category shelf-life and warning thresholds
-│       │   ├── wastelog/           # waste logging for analytics
-│       │   ├── analytics/          # dashboard/analytics queries
-│       │   ├── notification/       # daily digest email job
-│       │   ├── barcode/            # Open Food Facts lookup + product_cache
-│       │   ├── email/              # Resend client
-│       │   ├── common/             # exceptions, ownership guard, API envelope
-│       │   └── config/             # security, CORS, WebClient
-│       └── resources/db/migration/ # Flyway migrations (V1__init … V4__add_refresh_generation)
-├── src/                            # React frontend
-│   ├── pages/                      # Dashboard, ItemList, Analytics, Auth, Settings
-│   ├── components/                 # UI + feature components
-│   ├── context/                    # auth + theme state
-│   ├── hooks/                      # data fetching
-│   └── lib/                        # API client, types, helpers
-└── supabase/                       # local Supabase config (no auth used)
+├── backend/      Spring Boot API (Docker image, Flyway migrations V1–V4)
+├── src/          React frontend (pages, components, context, hooks, lib)
+├── docs/         Complete documentation package (master doc + 27 guides)
+├── vercel.json   SPA rewrite for Vercel
+└── production-smoke-test.ps1   15-step production verification
 ```
 
-## Getting started
+## Getting Started
 
-### Prerequisites
-
-- Java 21+
-- Maven 3.9+
-- Node.js 20+ (for the frontend)
-- A Supabase project (or any PostgreSQL 16+ database)
-
-### Backend
+Backend:
 
 ```bash
 cd backend
-# set required env vars
-$env:DB_URL="jdbc:postgresql://<host>:5432/postgres?sslmode=require"
-$env:DB_USERNAME="postgres"
-$env:DB_PASSWORD="<password>"
-$env:JWT_SECRET="<at-least-32-random-bytes>"
+# Set env vars: DB_URL (jdbc:postgresql:...?sslmode=require), DB_PASSWORD, JWT_SECRET (≥32 bytes)
 mvn spring-boot:run
 ```
 
-The app refuses to start without `DB_URL` (must be a JDBC PostgreSQL URL —
-for Supabase, prefix the connection string with `jdbc:`), `DB_PASSWORD`, or
-`JWT_SECRET` (no built-in defaults).
-
-Flyway creates the schema on first startup (baseline version 0, then
-`V1__init.sql`, `V2__seed_categories.sql`, `V3__add_waste_snapshot.sql`,
-`V4__add_refresh_generation.sql`). V4 is additive: it adds
-`users.refresh_generation` (default `0`), the counter behind refresh-token
-rotation and revocation. Never modify production tables by hand — schema
-changes go through new Flyway migrations.
-
-### Frontend
+Frontend:
 
 ```bash
 npm install
-# create .env from .env.example (VITE_API_BASE_URL=http://localhost:8080/api)
+Copy-Item .env.example .env   # set VITE_API_BASE_URL
 npm run dev
 ```
 
-The app expects the API at the URL given by `VITE_API_BASE_URL` (default
-`http://localhost:8080/api` in the local `.env`). The build fails if
-`VITE_API_BASE_URL` is not set — set it to your deployed backend URL in CI/CD.
+See [docs/22-ENVIRONMENT-CONFIGURATION.md](docs/22-ENVIRONMENT-CONFIGURATION.md)
+for every configuration variable (names and purpose only).
 
-## Configuration
+## Testing & Verification
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `DB_URL` | — (required, no default) | JDBC URL of the Postgres database. Must start with `jdbc:postgresql:` — Supabase connection strings (`postgresql://...`) need the `jdbc:` prefix, e.g. `jdbc:postgresql://<host>:5432/postgres?sslmode=require` |
-| `DB_USERNAME` | `postgres` | Database user |
-| `DB_PASSWORD` | — (required, no default) | Database password; set in your deployment's secret store |
-| `JWT_SECRET` | — (required, no default) | HS256 signing secret, at least 32 bytes; the app fails at startup if missing |
-| `JWT_ACCESS_TTL_MINUTES` | `60` | Access token lifetime |
-| `JWT_REFRESH_TTL_DAYS` | `14` | Refresh token lifetime |
-| `RESEND_API_KEY` | — | Resend API key for digest emails (missing = digest dry-run, nothing sent) |
-| `RESEND_FROM` | `Pantry Tracker <onboarding@resend.dev>` | Email sender |
-| `DIGEST_CRON` | `0 0 7 * * *` | Daily digest schedule |
-| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed frontend origins (comma-separated allowlist) |
-| `AUTH_COOKIE_SECURE` | `false` | `Secure` on the HttpOnly refresh cookie. **MUST be `true` in production (HTTPS)**; off by default so local HTTP dev works |
-| `AUTH_COOKIE_SAMESITE` | `Lax` | SameSite for the refresh cookie. `Lax` covers localhost and same-site production (e.g. `app.example.com` → `api.example.com`). Use `None` only if the frontend and API are on different registrable domains (requires `AUTH_COOKIE_SECURE=true`) |
-| `PORT` | `8080` | Server port |
-| `FLYWAY_ENABLED` | `true` | Toggle Flyway migrations |
-| `VITE_API_BASE_URL` | — (required for the frontend build) | Backend base URL, e.g. `http://localhost:8080/api` locally or `https://api.example.com/api` in production; the build fails if unset |
+- **Backend**: `mvn -B -ntp test` — 146 tests, 0 failures
+- **Frontend**: `npm run build` (TypeScript check + production bundle)
+- **Production smoke test** — 15 checks against the live API (15/15 PASS):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\production-smoke-test.ps1
+```
+
+## 📚 Documentation
+
+Full code-grounded documentation: [docs/README.md](docs/README.md) — index,
+or the [master document](docs/SMART-EXPIRY-TRACKER-COMPLETE-DOCUMENTATION.md)
+covering architecture, API, security, database design, deployment,
+operations, and troubleshooting.
