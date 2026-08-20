@@ -68,10 +68,38 @@ class JwtServiceTest {
         JwtService service = jwtService();
         UUID userId = UUID.randomUUID();
 
-        String refresh = service.createRefreshToken(userId);
+        String refresh = service.createRefreshToken(userId, 4);
 
-        assertThat(service.parseRefreshToken(refresh)).isEqualTo(userId);
+        assertThat(service.parseRefreshToken(refresh).userId()).isEqualTo(userId);
         assertThatThrownBy(() -> service.parseAccessToken(refresh))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void refreshTokenCarriesItsGeneration() {
+        JwtService service = jwtService();
+        UUID userId = UUID.randomUUID();
+
+        String refresh = service.createRefreshToken(userId, 7);
+
+        JwtService.RefreshClaims claims = service.parseRefreshToken(refresh);
+        assertThat(claims.userId()).isEqualTo(userId);
+        assertThat(claims.generation()).isEqualTo(7);
+    }
+
+    @Test
+    void refreshTokenWithoutGenerationIsRejected() throws Exception {
+        JwtService service = jwtService();
+        UUID userId = UUID.randomUUID();
+        String noGeneration = Jwts.builder()
+                .subject(userId.toString())
+                .claim("typ", "refresh")
+                .issuedAt(Date.from(Instant.now()))
+                .expiration(Date.from(Instant.now().plus(14, ChronoUnit.DAYS)))
+                .signWith(key())
+                .compact();
+
+        assertThatThrownBy(() -> service.parseRefreshToken(noGeneration))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

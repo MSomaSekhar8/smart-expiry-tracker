@@ -37,6 +37,9 @@ public class User {
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Instant.now();
 
+    @Column(name = "refresh_generation", nullable = false)
+    private long refreshGeneration = 0L;
+
     protected User() {}
 
     public User(String email, String passwordHash, String displayName) {
@@ -67,5 +70,13 @@ public class User {
 
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public long getRefreshGeneration() {
+        return refreshGeneration;
+    }
+
+    public void setRefreshGeneration(long refreshGeneration) {
+        this.refreshGeneration = refreshGeneration;
     }
 }

@@ -28,11 +28,19 @@ public final class AuthDtos {
             @NotBlank(message = "Password is required")
             String password) {}
 
-    public record RefreshRequest(
-            @NotBlank(message = "Refresh token is required")
-            String refreshToken) {}
+    /**
+     * The JSON body returned by login/register/refresh. Only the access token
+     * reaches the client; the refresh token travels in an HttpOnly cookie.
+     */
+    public record TokenResponse(
+            String accessToken,
+            UserView user) {}
 
-    public record TokenPair(
+    /**
+     * Service-internal result. The refresh token is handed to the controller
+     * (which writes it into a cookie) and never serialized to JSON.
+     */
+    public record AuthTokens(
             String accessToken,
             String refreshToken,
             UserView user) {}

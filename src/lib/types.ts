@@ -49,9 +49,8 @@ export interface AuthUser {
   role: UserRole
 }
 
-export interface TokenPair {
+export interface TokenResponse {
   accessToken: string
-  refreshToken: string
   user: AuthUser
 }
 

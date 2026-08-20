@@ -2,6 +2,7 @@ package com.pantrytracker.config;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -10,8 +11,11 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.hamcrest.Matchers.containsString;
 
 import com.pantrytracker.auth.AuthenticatedUser;
 import com.pantrytracker.auth.AuthController;
@@ -19,6 +23,7 @@ import com.pantrytracker.auth.AuthDtos;
 import com.pantrytracker.auth.AuthRateLimiter;
 import com.pantrytracker.auth.AuthService;
 import com.pantrytracker.auth.JwtService;
+import com.pantrytracker.auth.RefreshCookieService;
 import com.pantrytracker.common.HealthController;
 import com.pantrytracker.common.TooManyRequestsException;
 import com.pantrytracker.item.ItemController;
@@ -30,6 +35,7 @@ import com.pantrytracker.user.UserRepository;
 import com.pantrytracker.wastelog.WasteLog;
 import com.pantrytracker.wastelog.WasteLogController;
 import com.pantrytracker.wastelog.WasteLogRepository;
+import jakarta.servlet.http.Cookie;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
@@ -50,7 +56,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 
 @WebMvcTest({ItemController.class, WasteLogController.class, HealthController.class,
         DigestController.class, AuthController.class})
-@Import({SecurityConfig.class, CorsConfig.class, AuthRateLimiter.class})
+@Import({SecurityConfig.class, CorsConfig.class, AuthRateLimiter.class, RefreshCookieService.class})
 class SecurityMvcTest {
 
     @Autowired
@@ -180,7 +186,7 @@ class SecurityMvcTest {
     @Test
     void authEndpointsArePublic() throws Exception {
         when(authService.login(any()))
-                .thenReturn(new AuthDtos.TokenPair("access", "refresh",
+                .thenReturn(new AuthDtos.AuthTokens("access", "refresh",
                         new AuthDtos.UserView(UUID.randomUUID(), "a@example.com", null, "USER")));
 
         mockMvc.perform(post("/api/auth/login")
@@ -229,18 +235,23 @@ class SecurityMvcTest {
     private MockHttpServletRequestBuilder refresh(String ip) {
         return post("/api/auth/refresh")
                 .header("X-Forwarded-For", ip)
-                .contentType("application/json")
-                .content("{\"refreshToken\":\"some-token\"}");
+                .cookie(new Cookie(RefreshCookieService.COOKIE_NAME, "cookie-token"));
     }
 
-    private AuthDtos.TokenPair tokenPair() {
-        return new AuthDtos.TokenPair("access", "refresh",
+    private MockHttpServletRequestBuilder logout(String ip) {
+        return post("/api/auth/logout")
+                .header("X-Forwarded-For", ip)
+                .cookie(new Cookie(RefreshCookieService.COOKIE_NAME, "cookie-token"));
+    }
+
+    private AuthDtos.AuthTokens authTokens() {
+        return new AuthDtos.AuthTokens("access", "refresh",
                 new AuthDtos.UserView(UUID.randomUUID(), "a@example.com", null, "USER"));
     }
 
     @Test
     void loginRateLimitsTheSixthAttemptPerIpWithGenericMessage() throws Exception {
-        when(authService.login(any())).thenReturn(tokenPair());
+        when(authService.login(any())).thenReturn(authTokens());
 
         for (int i = 0; i < 5; i++) {
             mockMvc.perform(login("10.1.0.1")).andExpect(status().isOk());
@@ -253,7 +264,7 @@ class SecurityMvcTest {
 
     @Test
     void registerRateLimitsTheFourthAttemptPerIp() throws Exception {
-        when(authService.register(any())).thenReturn(tokenPair());
+        when(authService.register(any())).thenReturn(authTokens());
 
         for (int i = 0; i < 3; i++) {
             mockMvc.perform(register("10.1.0.2")).andExpect(status().isCreated());
@@ -266,7 +277,7 @@ class SecurityMvcTest {
 
     @Test
     void refreshRateLimitsTheEleventhAttemptPerIp() throws Exception {
-        when(authService.refresh(any())).thenReturn(tokenPair());
+        when(authService.refresh(any())).thenReturn(authTokens());
 
         for (int i = 0; i < 10; i++) {
             mockMvc.perform(refresh("10.1.0.3")).andExpect(status().isOk());
@@ -279,7 +290,7 @@ class SecurityMvcTest {
 
     @Test
     void rateLimitsAreIndependentPerIp() throws Exception {
-        when(authService.login(any())).thenReturn(tokenPair());
+        when(authService.login(any())).thenReturn(authTokens());
 
         for (int i = 0; i < 5; i++) {
             mockMvc.perform(login("10.1.0.4")).andExpect(status().isOk());
@@ -290,7 +301,7 @@ class SecurityMvcTest {
 
     @Test
     void rateLimitingDoesNotAffectHealthOrAuthenticatedEndpoints() throws Exception {
-        when(authService.login(any())).thenReturn(tokenPair());
+        when(authService.login(any())).thenReturn(authTokens());
         for (int i = 0; i < 5; i++) {
             mockMvc.perform(login("10.1.0.6")).andExpect(status().isOk());
         }
@@ -316,13 +327,91 @@ class SecurityMvcTest {
     }
 
     @Test
-    void successfulLoginStillReturnsTokens() throws Exception {
-        when(authService.login(any())).thenReturn(tokenPair());
+    void loginReturnsAccessTokenAndHttpOnlyRefreshCookieOnly() throws Exception {
+        when(authService.login(any())).thenReturn(authTokens());
 
         mockMvc.perform(login("10.1.0.8"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accessToken").value("access"))
-                .andExpect(jsonPath("$.refreshToken").value("refresh"))
-                .andExpect(jsonPath("$.user.email").value("a@example.com"));
+                .andExpect(jsonPath("$.refreshToken").doesNotExist())
+                .andExpect(jsonPath("$.user.email").value("a@example.com"))
+                .andExpect(cookie().value(RefreshCookieService.COOKIE_NAME, "refresh"))
+                .andExpect(cookie().httpOnly(RefreshCookieService.COOKIE_NAME, true))
+                .andExpect(cookie().secure(RefreshCookieService.COOKIE_NAME, false))
+                .andExpect(cookie().path(RefreshCookieService.COOKIE_NAME, "/api/auth"))
+                .andExpect(cookie().maxAge(RefreshCookieService.COOKIE_NAME, 14 * 24 * 60 * 60))
+                .andExpect(header().string("Set-Cookie", containsString("SameSite=Lax")));
+    }
+
+    @Test
+    void registerAlsoIssuesTheRefreshCookie() throws Exception {
+        when(authService.register(any())).thenReturn(authTokens());
+
+        mockMvc.perform(register("10.1.0.9"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.refreshToken").doesNotExist())
+                .andExpect(cookie().value(RefreshCookieService.COOKIE_NAME, "refresh"))
+                .andExpect(cookie().httpOnly(RefreshCookieService.COOKIE_NAME, true));
+    }
+
+    @Test
+    void refreshReadsTheCookieAndIssuesANewAccessTokenAndCookie() throws Exception {
+        when(authService.refresh("cookie-token"))
+                .thenReturn(new AuthDtos.AuthTokens("new-access", "new-refresh",
+                        new AuthDtos.UserView(UUID.randomUUID(), "a@example.com", null, "USER")));
+
+        mockMvc.perform(refresh("10.1.0.10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").value("new-access"))
+                .andExpect(jsonPath("$.refreshToken").doesNotExist())
+                .andExpect(cookie().value(RefreshCookieService.COOKIE_NAME, "new-refresh"))
+                .andExpect(cookie().httpOnly(RefreshCookieService.COOKIE_NAME, true));
+
+        verify(authService).refresh("cookie-token");
+    }
+
+    @Test
+    void refreshWithoutCookieReturns401WithoutCallingTheService() throws Exception {
+        mockMvc.perform(post("/api/auth/refresh")
+                        .header("X-Forwarded-For", "10.1.0.11"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Invalid or expired refresh token"));
+
+        verify(authService, never()).refresh(any());
+    }
+
+    @Test
+    void refreshWithInvalidCookieReturns401() throws Exception {
+        when(authService.refresh("cookie-token"))
+                .thenThrow(new BadCredentialsException("Invalid or expired refresh token"));
+
+        mockMvc.perform(refresh("10.1.0.12"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Invalid or expired refresh token"));
+    }
+
+    @Test
+    void logoutClearsTheRefreshCookieWithMatchingAttributes() throws Exception {
+        mockMvc.perform(logout("10.1.0.13"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("Logged out"))
+                .andExpect(cookie().value(RefreshCookieService.COOKIE_NAME, ""))
+                .andExpect(cookie().httpOnly(RefreshCookieService.COOKIE_NAME, true))
+                .andExpect(cookie().path(RefreshCookieService.COOKIE_NAME, "/api/auth"))
+                .andExpect(cookie().maxAge(RefreshCookieService.COOKIE_NAME, 0))
+                .andExpect(header().string("Set-Cookie", containsString("SameSite=Lax")));
+
+        verify(authService).revokeRefreshToken("cookie-token");
+    }
+
+    @Test
+    void logoutWithoutCookieStillClearsTheCookie() throws Exception {
+        mockMvc.perform(post("/api/auth/logout")
+                        .header("X-Forwarded-For", "10.1.0.14"))
+                .andExpect(status().isOk())
+                .andExpect(cookie().value(RefreshCookieService.COOKIE_NAME, ""))
+                .andExpect(cookie().maxAge(RefreshCookieService.COOKIE_NAME, 0));
+
+        verify(authService, never()).revokeRefreshToken(any());
     }
 }

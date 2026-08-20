@@ -7,8 +7,8 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import api, { tokenStore } from '@/lib/apiClient'
-import type { AuthUser, TokenPair } from '@/lib/types'
+import api, { refreshSession, tokenStore } from '@/lib/apiClient'
+import type { AuthUser, TokenResponse } from '@/lib/types'
 
 interface AuthContextValue {
   user: AuthUser | null
@@ -28,8 +28,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     const restore = async () => {
       if (!tokenStore.access) {
-        if (!cancelled) setLoading(false)
-        return
+        // After a hard refresh the access token is gone from memory; the
+        // browser still holds the HttpOnly refresh cookie, so trade it for
+        // a new access token.
+        const token = await refreshSession()
+        if (!token) {
+          if (!cancelled) setLoading(false)
+          return
+        }
       }
       try {
         const { data } = await api.get<AuthUser>('/auth/me')
@@ -52,14 +58,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('auth:unauthorized', onUnauthorized)
   }, [])
 
-  const applyTokens = useCallback((pair: TokenPair) => {
+  const applyTokens = useCallback((pair: TokenResponse) => {
     tokenStore.set(pair)
     setUser(pair.user)
   }, [])
 
   const login = useCallback(
     async (email: string, password: string) => {
-      const { data } = await api.post<TokenPair>('/auth/login', { email, password })
+      const { data } = await api.post<TokenResponse>('/auth/login', { email, password })
       applyTokens(data)
     },
     [applyTokens],
@@ -67,7 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = useCallback(
     async (email: string, password: string, displayName?: string) => {
-      const { data } = await api.post<TokenPair>('/auth/register', {
+      const { data } = await api.post<TokenResponse>('/auth/register', {
         email,
         password,
         displayName: displayName || null,
@@ -79,6 +85,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
+      // The browser sends the refresh cookie; the backend clears it and
+      // revokes the token's generation.
       await api.post('/auth/logout')
     } catch {
       // token is dropped regardless

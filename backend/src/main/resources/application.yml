@@ -37,6 +37,15 @@ app:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
 
+  auth:
+    # HttpOnly refresh cookie. Secure MUST be true in production (HTTPS);
+    # it is off by default so local development over plain HTTP still works.
+    cookie-secure: ${AUTH_COOKIE_SECURE:false}
+    # Lax works for localhost and same-site production topologies. If the
+    # frontend and API are on different registrable domains, use None
+    # (requires AUTH_COOKIE_SECURE=true).
+    cookie-samesite: ${AUTH_COOKIE_SAMESITE:Lax}
+
 logging:
   level:
     com.pantrytracker: INFO

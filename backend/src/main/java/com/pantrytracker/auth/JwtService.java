@@ -15,13 +15,15 @@ import org.springframework.stereotype.Service;
 /**
  * Issues and validates HS256 JWTs. The {@code typ} claim distinguishes
  * access tokens (typ=access) from refresh tokens (typ=refresh) so a refresh
- * token can never be used as a bearer credential.
+ * token can never be used as a bearer credential. Refresh tokens also carry
+ * the user's refresh-generation so rotated/revoked tokens can be rejected.
  */
 @Service
 public class JwtService {
 
     private static final String TYPE_ACCESS = "access";
     private static final String TYPE_REFRESH = "refresh";
+    private static final String CLAIM_GENERATION = "gen";
 
     private final SecretKey key;
     private final long accessTtlMinutes;
@@ -42,8 +44,16 @@ public class JwtService {
         return createToken(userId, TYPE_ACCESS, accessTtlMinutes, ChronoUnit.MINUTES);
     }
 
-    public String createRefreshToken(UUID userId) {
-        return createToken(userId, TYPE_REFRESH, refreshTtlDays, ChronoUnit.DAYS);
+    public String createRefreshToken(UUID userId, long generation) {
+        Instant now = Instant.now();
+        return Jwts.builder()
+                .subject(userId.toString())
+                .claim("typ", TYPE_REFRESH)
+                .claim(CLAIM_GENERATION, generation)
+                .issuedAt(Date.from(now))
+                .expiration(Date.from(now.plus(refreshTtlDays, ChronoUnit.DAYS)))
+                .signWith(key)
+                .compact();
     }
 
     private String createToken(UUID userId, String type, long ttl, ChronoUnit unit) {
@@ -67,13 +77,23 @@ public class JwtService {
         return UUID.fromString(claims.getSubject());
     }
 
-    /** @return the subject (user id) when the token is a valid, unexpired refresh token. */
-    public UUID parseRefreshToken(String token) {
+    /**
+     * @return the user id and the refresh-generation the token was issued at,
+     *         when the token is a valid, unexpired refresh token.
+     */
+    public RefreshClaims parseRefreshToken(String token) {
         Claims claims = Jwts.parser().verifyWith(key).build()
                 .parseSignedClaims(token).getPayload();
         if (!TYPE_REFRESH.equals(claims.get("typ", String.class))) {
             throw new IllegalArgumentException("Not a refresh token");
         }
-        return UUID.fromString(claims.getSubject());
+        Long generation = claims.get(CLAIM_GENERATION, Long.class);
+        if (generation == null) {
+            throw new IllegalArgumentException("Refresh token without a generation");
+        }
+        return new RefreshClaims(UUID.fromString(claims.getSubject()), generation);
     }
+
+    /** A parsed refresh token: the user it belongs to and its generation. */
+    public record RefreshClaims(UUID userId, long generation) {}
 }

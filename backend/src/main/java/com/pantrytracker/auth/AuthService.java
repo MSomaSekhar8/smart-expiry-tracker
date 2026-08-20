@@ -28,7 +28,7 @@ public class AuthService {
     }
 
     @Transactional
-    public AuthDtos.TokenPair register(AuthDtos.RegisterRequest request) {
+    public AuthDtos.AuthTokens register(AuthDtos.RegisterRequest request) {
         String email = request.email().trim().toLowerCase(Locale.ROOT);
         if (userRepository.existsByEmailIgnoreCase(email)) {
             throw new ConflictException("An account with this email already exists");
@@ -40,7 +40,7 @@ public class AuthService {
     }
 
     @Transactional(readOnly = true)
-    public AuthDtos.TokenPair login(AuthDtos.LoginRequest request) {
+    public AuthDtos.AuthTokens login(AuthDtos.LoginRequest request) {
         String email = request.email().trim().toLowerCase(Locale.ROOT);
         User user = userRepository.findByEmailIgnoreCase(email)
                 .orElseThrow(() -> new BadCredentialsException("Invalid email or password"));
@@ -50,17 +50,43 @@ public class AuthService {
         return tokensFor(user);
     }
 
-    @Transactional(readOnly = true)
-    public AuthDtos.TokenPair refresh(AuthDtos.RefreshRequest request) {
-        UUID userId;
+    /**
+     * Validates a refresh token, then rotates it: the user's generation is
+     * bumped so the presented token can never be used again. The lock on the
+     * user row serializes concurrent refreshes so a token cannot be replayed
+     * twice by racing two requests.
+     */
+    @Transactional
+    public AuthDtos.AuthTokens refresh(String refreshToken) {
+        JwtService.RefreshClaims claims;
         try {
-            userId = jwtService.parseRefreshToken(request.refreshToken());
+            claims = jwtService.parseRefreshToken(refreshToken);
         } catch (Exception ex) {
             throw new BadCredentialsException("Invalid or expired refresh token");
         }
-        User user = userRepository.findById(userId)
+        User user = userRepository.findByIdForUpdate(claims.userId())
                 .orElseThrow(() -> new BadCredentialsException("Invalid or expired refresh token"));
+        if (user.getRefreshGeneration() != claims.generation()) {
+            throw new BadCredentialsException("Invalid or expired refresh token");
+        }
+        user.setRefreshGeneration(user.getRefreshGeneration() + 1);
         return tokensFor(user);
+    }
+
+    /**
+     * Revokes every outstanding refresh token for the user behind the given
+     * token by bumping their generation. Invalid or expired tokens are
+     * ignored — the caller clears the cookie regardless.
+     */
+    @Transactional
+    public void revokeRefreshToken(String refreshToken) {
+        try {
+            JwtService.RefreshClaims claims = jwtService.parseRefreshToken(refreshToken);
+            userRepository.findByIdForUpdate(claims.userId()).ifPresent(user ->
+                    user.setRefreshGeneration(user.getRefreshGeneration() + 1));
+        } catch (Exception ignored) {
+            // nothing to revoke — the cookie is cleared by the controller anyway
+        }
     }
 
     @Transactional(readOnly = true)
@@ -70,10 +96,10 @@ public class AuthService {
         return toView(user);
     }
 
-    private AuthDtos.TokenPair tokensFor(User user) {
-        return new AuthDtos.TokenPair(
+    private AuthDtos.AuthTokens tokensFor(User user) {
+        return new AuthDtos.AuthTokens(
                 jwtService.createAccessToken(user.getId()),
-                jwtService.createRefreshToken(user.getId()),
+                jwtService.createRefreshToken(user.getId(), user.getRefreshGeneration()),
                 toView(user));
     }
 

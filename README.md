@@ -116,6 +116,8 @@ The app expects the API at the URL given by `VITE_API_BASE_URL` (default
 | `RESEND_FROM` | `Pantry Tracker <onboarding@resend.dev>` | Email sender |
 | `DIGEST_CRON` | `0 0 7 * * *` | Daily digest schedule |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed frontend origins (comma-separated allowlist) |
+| `AUTH_COOKIE_SECURE` | `false` | `Secure` on the HttpOnly refresh cookie. **MUST be `true` in production (HTTPS)**; off by default so local HTTP dev works |
+| `AUTH_COOKIE_SAMESITE` | `Lax` | SameSite for the refresh cookie. `Lax` covers localhost and same-site production (e.g. `app.example.com` → `api.example.com`). Use `None` only if the frontend and API are on different registrable domains (requires `AUTH_COOKIE_SECURE=true`) |
 | `PORT` | `8080` | Server port |
 | `FLYWAY_ENABLED` | `true` | Toggle Flyway migrations |
 | `VITE_API_BASE_URL` | — (required for the frontend build) | Backend base URL, e.g. `http://localhost:8080/api` locally or `https://api.example.com/api` in production; the build fails if unset |

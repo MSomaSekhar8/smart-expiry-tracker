@@ -1,23 +1,22 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios'
-import { apiErrorMessage, type TokenPair } from './types'
+import { apiErrorMessage, type TokenResponse } from './types'
 
-export const ACCESS_TOKEN_KEY = 'pantry_access_token'
-export const REFRESH_TOKEN_KEY = 'pantry_refresh_token'
+// The access token lives ONLY in memory. The refresh token lives ONLY in an
+// HttpOnly cookie that JavaScript can never read — see RefreshCookieService.
+let accessToken: string | null = null
 
 export const tokenStore = {
   get access(): string | null {
-    return localStorage.getItem(ACCESS_TOKEN_KEY)
+    return accessToken
   },
-  get refresh(): string | null {
-    return localStorage.getItem(REFRESH_TOKEN_KEY)
+  set(pair: TokenResponse) {
+    accessToken = pair.accessToken
   },
-  set(pair: TokenPair) {
-    localStorage.setItem(ACCESS_TOKEN_KEY, pair.accessToken)
-    localStorage.setItem(REFRESH_TOKEN_KEY, pair.refreshToken)
+  setAccess(token: string) {
+    accessToken = token
   },
   clear() {
-    localStorage.removeItem(ACCESS_TOKEN_KEY)
-    localStorage.removeItem(REFRESH_TOKEN_KEY)
+    accessToken = null
   },
 }
 
@@ -28,7 +27,9 @@ if (!baseURL) {
   )
 }
 
-const api = axios.create({ baseURL })
+// withCredentials makes the browser send the HttpOnly refresh cookie on
+// requests to the API, and accept Set-Cookie responses from it.
+const api = axios.create({ baseURL, withCredentials: true })
 
 api.interceptors.request.use((config) => {
   const token = tokenStore.access
@@ -40,13 +41,16 @@ api.interceptors.request.use((config) => {
 
 let refreshing: Promise<string | null> | null = null
 
-async function refreshAccessToken(): Promise<string | null> {
-  const refreshToken = tokenStore.refresh
-  if (!refreshToken) return null
+/**
+ * Asks the backend for a fresh access token using the HttpOnly refresh
+ * cookie. No refresh token is ever read from or written to storage here.
+ */
+export async function refreshSession(): Promise<string | null> {
   try {
-    const { data } = await axios.post<TokenPair>(
+    const { data } = await axios.post<TokenResponse>(
       `${api.defaults.baseURL}/auth/refresh`,
-      { refreshToken },
+      undefined,
+      { withCredentials: true },
     )
     tokenStore.set(data)
     return data.accessToken
@@ -66,7 +70,7 @@ api.interceptors.response.use(
 
     if (status === 401 && original && !original._retried && !isAuthRequest) {
       original._retried = true
-      refreshing = refreshing ?? refreshAccessToken()
+      refreshing = refreshing ?? refreshSession()
       const token = await refreshing
       refreshing = null
       if (token) {
