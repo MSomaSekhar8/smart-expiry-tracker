@@ -15,8 +15,12 @@ dist-ssr
 .DS_Store
 Thumbs.db
 
-# env
+# env — never commit real environment values.
+# .env.example is the tracked template and must stay trackable.
 .env
+.env.development
+.env.production
+.env.staging
 .env.local
 .env.*.local
 
