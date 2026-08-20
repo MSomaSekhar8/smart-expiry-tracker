@@ -19,11 +19,14 @@ how much money you're wasting on spoiled food and expired medicine.
   historical snapshot (item name + unit) is kept even after the item is
   deleted, so the dashboard and analytics pages keep showing what was wasted.
 - **Authentication** — email/password registration and login with JWT access +
-  refresh tokens (BCrypt-hashed passwords).
+  refresh tokens (BCrypt-hashed passwords). Access tokens are kept in browser
+  memory only (never localStorage/sessionStorage); refresh tokens travel in an
+  HttpOnly cookie (`refresh_token`, `Path=/api/auth`) and are rotated on every
+  refresh, with generation-based revocation on logout.
 
 ## Architecture
 
-- **Backend** — Java 21 + Spring Boot 3.4 (Web, Security, Data JPA, Validation,
+- **Backend** — Java 21 + Spring Boot 3.5.16 (Web, Security, Data JPA, Validation,
   Scheduling, WebFlux) in `backend/`.
 - **Database** — Supabase is used **only as managed Postgres**. No Supabase Auth,
   no RLS, no Edge Functions. The schema is owned and versioned by **Flyway**
@@ -52,7 +55,7 @@ smart-expiry-tracker/
 │       │   ├── email/              # Resend client
 │       │   ├── common/             # exceptions, ownership guard, API envelope
 │       │   └── config/             # security, CORS, WebClient
-│       └── resources/db/migration/ # Flyway migrations (V1__init, V2__seed)
+│       └── resources/db/migration/ # Flyway migrations (V1__init … V4__add_refresh_generation)
 ├── src/                            # React frontend
 │   ├── pages/                      # Dashboard, ItemList, Analytics, Auth, Settings
 │   ├── components/                 # UI + feature components
@@ -88,7 +91,11 @@ for Supabase, prefix the connection string with `jdbc:`), `DB_PASSWORD`, or
 `JWT_SECRET` (no built-in defaults).
 
 Flyway creates the schema on first startup (baseline version 0, then
-`V1__init.sql`, `V2__seed_categories.sql`, `V3__add_waste_snapshot.sql`).
+`V1__init.sql`, `V2__seed_categories.sql`, `V3__add_waste_snapshot.sql`,
+`V4__add_refresh_generation.sql`). V4 is additive: it adds
+`users.refresh_generation` (default `0`), the counter behind refresh-token
+rotation and revocation. Never modify production tables by hand — schema
+changes go through new Flyway migrations.
 
 ### Frontend
 
