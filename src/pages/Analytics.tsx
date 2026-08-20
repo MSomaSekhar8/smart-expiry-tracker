@@ -5,6 +5,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { WasteChart } from '@/components/WasteChart'
 import { useQuery } from '@/lib/useQuery'
 import api, { toErrorMessage } from '@/lib/apiClient'
+import { formatINR } from '@/lib/money'
 import type { MonthlyWasteResponse } from '@/lib/types'
 
 export default function Analytics() {
@@ -72,9 +73,7 @@ export default function Analytics() {
               {loading ? (
                 <Skeleton className="h-16 w-full" />
               ) : (
-                <p className="font-serif text-4xl font-semibold">
-                  ${Number(costTotal).toFixed(2)}
-                </p>
+                <p className="font-serif text-4xl font-semibold">{formatINR(costTotal)}</p>
               )}
             </CardContent>
           </Card>
@@ -119,7 +118,7 @@ export default function Analytics() {
                     <tr key={m.month} className="border-b last:border-0">
                       <td className="py-2 pr-4 font-medium">{m.month}</td>
                       <td className="py-2 pr-4">{m.wastedItems}</td>
-                      <td className="py-2">${Number(m.costLost).toFixed(2)}</td>
+                      <td className="py-2">{formatINR(m.costLost)}</td>
                     </tr>
                   ))}
                 </tbody>

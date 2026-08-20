@@ -87,7 +87,7 @@ export function WasteModal({ item, open, onOpenChange, onSubmit }: WasteModalPro
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="waste-cost">Est. cost lost ($)</Label>
+              <Label htmlFor="waste-cost">Est. cost lost (₹)</Label>
               <Input
                 id="waste-cost"
                 type="number"
