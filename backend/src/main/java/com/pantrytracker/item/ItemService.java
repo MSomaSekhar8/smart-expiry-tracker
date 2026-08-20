@@ -16,6 +16,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -128,12 +129,25 @@ public class ItemService {
     public ItemDtos.Response markWasted(UUID userId, UUID itemId,
                                         BigDecimal quantityWasted,
                                         BigDecimal estimatedCostLost) {
-        Item item = findOwned(userId, itemId);
+        // Ownership is enforced inside the locking query itself: SELECT ... FOR
+        // UPDATE WHERE id = ? AND owner.id = ?. The row lock serializes
+        // concurrent markWasted calls for the same item, so only one
+        // transaction can snapshot the WasteLog and delete the item.
+        Item item = itemRepository.findOwnedForUpdate(itemId, userId)
+                .orElseThrow(() -> {
+                    if (itemRepository.existsById(itemId)) {
+                        throw new AccessDeniedException("You don't have access to this item");
+                    }
+                    return new NotFoundException("Item not found");
+                });
         if (quantityWasted == null) {
             quantityWasted = item.getQuantity();
         }
         if (quantityWasted.compareTo(BigDecimal.ZERO) <= 0) {
             throw new BadRequestException("Quantity wasted must be positive");
+        }
+        if (quantityWasted.compareTo(item.getQuantity()) > 0) {
+            throw new BadRequestException("Quantity wasted cannot exceed the item quantity");
         }
         WasteLog wasteLog = new WasteLog(item.getOwner(), item,
                 quantityWasted, estimatedCostLost);

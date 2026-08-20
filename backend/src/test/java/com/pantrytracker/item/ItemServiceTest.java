@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -115,11 +116,31 @@ class ItemServiceTest {
     @Test
     void markWastedOnAnotherUsersItemThrowsAccessDenied() {
         Item item = itemOwnedBy(ownerId);
-        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+        when(itemRepository.findOwnedForUpdate(item.getId(), otherUserId))
+                .thenReturn(Optional.empty());
+        when(itemRepository.existsById(item.getId())).thenReturn(true);
 
         assertThatThrownBy(() -> itemService.markWasted(otherUserId, item.getId(),
                 BigDecimal.ONE, BigDecimal.ZERO))
                 .isInstanceOf(AccessDeniedException.class);
+
+        verify(wasteLogRepository, never()).save(any());
+        verify(itemRepository, never()).delete(any());
+    }
+
+    @Test
+    void markWastedOnMissingItemThrowsNotFound() {
+        UUID missing = UUID.randomUUID();
+        when(itemRepository.findOwnedForUpdate(missing, ownerId))
+                .thenReturn(Optional.empty());
+        when(itemRepository.existsById(missing)).thenReturn(false);
+
+        assertThatThrownBy(() -> itemService.markWasted(ownerId, missing,
+                BigDecimal.ONE, null))
+                .isInstanceOf(NotFoundException.class);
+
+        verify(wasteLogRepository, never()).save(any());
+        verify(itemRepository, never()).delete(any());
     }
 
     @Test
@@ -222,7 +243,8 @@ class ItemServiceTest {
         Item item = itemOwnedBy(ownerId, "Rice", null);
         item.setUnit("kg");
         item.setQuantity(new BigDecimal("5"));
-        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+        when(itemRepository.findOwnedForUpdate(item.getId(), ownerId))
+                .thenReturn(Optional.of(item));
 
         itemService.markWasted(ownerId, item.getId(), new BigDecimal("5"), BigDecimal.ZERO);
 
@@ -238,10 +260,22 @@ class ItemServiceTest {
     }
 
     @Test
+    void markWastedUsesLockedOwnedLookup() {
+        Item item = itemOwnedBy(ownerId, "Milk", null);
+        when(itemRepository.findOwnedForUpdate(item.getId(), ownerId))
+                .thenReturn(Optional.of(item));
+
+        itemService.markWasted(ownerId, item.getId(), BigDecimal.ONE, null);
+
+        verify(itemRepository).findOwnedForUpdate(item.getId(), ownerId);
+    }
+
+    @Test
     void markWastedOwnItemSavesWasteLogAndDeletesItem() {
         Item item = itemOwnedBy(ownerId, "Milk", null);
         item.setQuantity(new BigDecimal("2"));
-        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+        when(itemRepository.findOwnedForUpdate(item.getId(), ownerId))
+                .thenReturn(Optional.of(item));
 
         ItemDtos.Response response = itemService.markWasted(ownerId, item.getId(),
                 new BigDecimal("2"), new BigDecimal("1.5"));
@@ -260,10 +294,26 @@ class ItemServiceTest {
     }
 
     @Test
+    void markWastedExactQuantitySucceeds() {
+        Item item = itemOwnedBy(ownerId, "Rice", null);
+        item.setQuantity(new BigDecimal("5"));
+        when(itemRepository.findOwnedForUpdate(item.getId(), ownerId))
+                .thenReturn(Optional.of(item));
+
+        itemService.markWasted(ownerId, item.getId(), new BigDecimal("5"), null);
+
+        ArgumentCaptor<WasteLog> captor = ArgumentCaptor.forClass(WasteLog.class);
+        verify(wasteLogRepository).save(captor.capture());
+        assertThat(captor.getValue().getQuantityWasted()).isEqualByComparingTo("5");
+        verify(itemRepository).delete(item);
+    }
+
+    @Test
     void markWastedDefaultsQuantityToItemQuantity() {
         Item item = itemOwnedBy(ownerId, "Rice", null);
         item.setQuantity(new BigDecimal("5"));
-        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+        when(itemRepository.findOwnedForUpdate(item.getId(), ownerId))
+                .thenReturn(Optional.of(item));
 
         itemService.markWasted(ownerId, item.getId(), null, null);
 
@@ -276,7 +326,8 @@ class ItemServiceTest {
     @Test
     void markWastedWithNonPositiveQuantityThrowsBadRequest() {
         Item item = itemOwnedBy(ownerId, "Milk", null);
-        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+        when(itemRepository.findOwnedForUpdate(item.getId(), ownerId))
+                .thenReturn(Optional.of(item));
 
         assertThatThrownBy(() -> itemService.markWasted(ownerId, item.getId(),
                 BigDecimal.ZERO, null))
@@ -287,12 +338,61 @@ class ItemServiceTest {
     }
 
     @Test
+    void markWastedWithNegativeQuantityThrowsBadRequest() {
+        Item item = itemOwnedBy(ownerId, "Milk", null);
+        when(itemRepository.findOwnedForUpdate(item.getId(), ownerId))
+                .thenReturn(Optional.of(item));
+
+        assertThatThrownBy(() -> itemService.markWasted(ownerId, item.getId(),
+                new BigDecimal("-1"), null))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(wasteLogRepository, never()).save(any());
+        verify(itemRepository, never()).delete(any());
+    }
+
+    @Test
+    void markWastedWithQuantityExceedingItemQuantityThrowsBadRequest() {
+        Item item = itemOwnedBy(ownerId, "Milk", null);
+        item.setQuantity(new BigDecimal("5"));
+        when(itemRepository.findOwnedForUpdate(item.getId(), ownerId))
+                .thenReturn(Optional.of(item));
+
+        assertThatThrownBy(() -> itemService.markWasted(ownerId, item.getId(),
+                new BigDecimal("6"), null))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(wasteLogRepository, never()).save(any());
+        verify(itemRepository, never()).delete(any());
+    }
+
+    @Test
+    void markWastedRepeatedRequestDoesNotCreateDuplicateWasteLog() {
+        Item item = itemOwnedBy(ownerId, "Milk", null);
+        item.setQuantity(new BigDecimal("2"));
+        when(itemRepository.findOwnedForUpdate(item.getId(), ownerId))
+                .thenReturn(Optional.of(item), Optional.empty());
+        // The second (retried) request finds the item already deleted.
+        when(itemRepository.existsById(item.getId())).thenReturn(false);
+
+        itemService.markWasted(ownerId, item.getId(), new BigDecimal("2"), null);
+
+        assertThatThrownBy(() -> itemService.markWasted(ownerId, item.getId(),
+                new BigDecimal("2"), null))
+                .isInstanceOf(NotFoundException.class);
+
+        verify(wasteLogRepository, times(1)).save(any());
+        verify(itemRepository, times(1)).delete(item);
+    }
+
+    @Test
     void markWastedFailureLeavesNoPartialState() {
         // If persisting the waste log fails, the item must NOT be deleted:
         // the method throws before delete() is reached, and @Transactional
         // would roll the whole operation back at the database level.
         Item item = itemOwnedBy(ownerId, "Milk", null);
-        when(itemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+        when(itemRepository.findOwnedForUpdate(item.getId(), ownerId))
+                .thenReturn(Optional.of(item));
         doThrow(new RuntimeException("simulated DB failure"))
                 .when(wasteLogRepository).save(any(WasteLog.class));
 
