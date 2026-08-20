@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { toErrorMessage } from '@/lib/apiClient'
 import api from '@/lib/apiClient'
 import type { BarcodeLookupResult } from '@/lib/types'
+import type { Html5Qrcode } from 'html5-qrcode'
 import { toast } from 'sonner'
 
 interface BarcodeScannerInputProps {
@@ -13,47 +14,33 @@ interface BarcodeScannerInputProps {
   disabled?: boolean
 }
 
+type ScannerStatus = 'idle' | 'starting' | 'running' | 'stopping' | 'error'
+
+function cameraErrorMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err)
+  const lower = message.toLowerCase()
+  if (lower.includes('permission') || lower.includes('notallowed') || lower.includes('denied')) {
+    return 'Camera permission was denied. Allow camera access in your browser and try again.'
+  }
+  if (lower.includes('notfound') || lower.includes('no camera')) {
+    return 'No camera was found on this device.'
+  }
+  if (lower.includes('notreadable') || lower.includes('in use') || lower.includes('already')) {
+    return 'The camera could not be started — it may be in use by another application.'
+  }
+  if (lower.includes('overconstrained')) {
+    return 'No camera matching the required settings was found.'
+  }
+  return 'The camera could not be started. Check camera permissions and try again.'
+}
+
 export function BarcodeScannerInput({ value, onChange, disabled }: BarcodeScannerInputProps) {
-  const [scanning, setScanning] = useState(false)
+  const [status, setStatus] = useState<ScannerStatus>('idle')
+  const [scannerError, setScannerError] = useState<string | null>(null)
   const [lookingUp, setLookingUp] = useState(false)
   const [lastResult, setLastResult] = useState<BarcodeLookupResult | null>(null)
-  const scannerRef = useRef<HTMLDivElement | null>(null)
-  const html5QrCodeRef = useRef<{ stop: () => Promise<void> } | null>(null)
-
-  useEffect(() => {
-    return () => {
-      html5QrCodeRef.current?.stop().catch(() => {})
-    }
-  }, [])
-
-  const startScanner = async () => {
-    if (scanning) return
-    const { Html5Qrcode } = await import('html5-qrcode')
-    const scanner = new Html5Qrcode('barcode-reader')
-    html5QrCodeRef.current = scanner
-    setScanning(true)
-    try {
-      await scanner.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 220, height: 120 } },
-        (decodedText) => {
-          onChange(decodedText)
-          scanner.stop().catch(() => {})
-          setScanning(false)
-          void lookup(decodedText)
-        },
-        () => {},
-      )
-    } catch (err) {
-      setScanning(false)
-      toast.error(toErrorMessage(err))
-    }
-  }
-
-  const stopScanner = () => {
-    html5QrCodeRef.current?.stop().catch(() => {})
-    setScanning(false)
-  }
+  const scannerInstanceRef = useRef<Html5Qrcode | null>(null)
+  const scanHandledRef = useRef(false)
 
   const lookup = async (code: string) => {
     if (!/^\d{8,14}$/.test(code)) {
@@ -74,6 +61,95 @@ export function BarcodeScannerInput({ value, onChange, disabled }: BarcodeScanne
       setLookingUp(false)
     }
   }
+
+  const stopInstance = async (instance: Html5Qrcode | null) => {
+    if (!instance) return
+    try {
+      if (instance.isScanning) await instance.stop()
+      instance.clear()
+    } catch {}
+  }
+
+  const stopScanner = async () => {
+    setStatus('stopping')
+    const instance = scannerInstanceRef.current
+    scannerInstanceRef.current = null
+    await stopInstance(instance)
+    scanHandledRef.current = false
+    setStatus('idle')
+  }
+
+  const handleDetected = (decodedText: string) => {
+    if (scanHandledRef.current) return
+    scanHandledRef.current = true
+    onChange(decodedText)
+    void lookup(decodedText)
+    void stopScanner()
+  }
+
+  const startScanner = () => {
+    if (status === 'starting' || status === 'running' || status === 'stopping') return
+    setScannerError(null)
+    scanHandledRef.current = false
+    setStatus('starting')
+  }
+
+  useEffect(() => {
+    if (status !== 'starting') return
+    let cancelled = false
+
+    const start = async () => {
+      let instance: Html5Qrcode | null = null
+      try {
+        const { Html5Qrcode } = await import('html5-qrcode')
+        if (cancelled) return
+        instance = new Html5Qrcode('barcode-reader')
+        scannerInstanceRef.current = instance
+        await instance.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 220, height: 120 } },
+          (decodedText) => {
+            void handleDetected(decodedText)
+          },
+          () => {},
+        )
+        if (cancelled) {
+          await stopInstance(instance)
+          return
+        }
+        setStatus('running')
+      } catch (err) {
+        if (cancelled) return
+        scannerInstanceRef.current = null
+        if (instance) {
+          try {
+            instance.clear()
+          } catch {}
+        }
+        setScannerError(cameraErrorMessage(err))
+        setStatus('error')
+      }
+    }
+
+    void start()
+
+    return () => {
+      cancelled = true
+    }
+  }, [status])
+
+  useEffect(() => {
+    return () => {
+      const instance = scannerInstanceRef.current
+      scannerInstanceRef.current = null
+      if (instance) {
+        try {
+          if (instance.isScanning) void instance.stop().catch(() => {})
+          instance.clear()
+        } catch {}
+      }
+    }
+  }, [])
 
   return (
     <div className="space-y-2">
@@ -103,9 +179,14 @@ export function BarcodeScannerInput({ value, onChange, disabled }: BarcodeScanne
             Look up
           </Button>
         ) : null}
-        {scanning ? (
-          <Button type="button" variant="outline" onClick={stopScanner}>
+        {status === 'running' ? (
+          <Button type="button" variant="outline" onClick={() => void stopScanner()}>
             Stop
+          </Button>
+        ) : status === 'starting' || status === 'stopping' ? (
+          <Button type="button" variant="outline" disabled>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {status === 'starting' ? 'Starting…' : 'Stopping…'}
           </Button>
         ) : (
           <Button type="button" variant="outline" onClick={() => void startScanner()} disabled={disabled}>
@@ -114,7 +195,12 @@ export function BarcodeScannerInput({ value, onChange, disabled }: BarcodeScanne
           </Button>
         )}
       </div>
-      {scanning && <div id="barcode-reader" ref={scannerRef} className="overflow-hidden rounded-lg border" />}
+      {(status === 'starting' || status === 'running' || status === 'stopping') && (
+        <div id="barcode-reader" className="overflow-hidden rounded-lg border" />
+      )}
+      {status === 'error' && scannerError && (
+        <p className="text-xs font-medium text-destructive">{scannerError}</p>
+      )}
       {lastResult && (
         <p className="text-xs text-muted-foreground">
           {lastResult.name ?? 'Product'} {lastResult.brand ? `· ${lastResult.brand}` : ''}{' '}
