@@ -5,12 +5,17 @@ import com.pantrytracker.common.BadRequestException;
 import java.time.Duration;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 
 /**
  * Server-side Open Food Facts lookup with a Postgres-backed cache. The
  * browser never calls the public API directly.
+ *
+ * The cache read is read-only by nature (SimpleJpaRepository runs it in its
+ * own short read-only transaction), but lookup() itself holds NO transaction:
+ * the external API call must never run inside a DB transaction, and the cache
+ * write goes through {@link ProductCacheWriter}, which commits in its own
+ * REQUIRES_NEW transaction.
  */
 @Service
 public class BarcodeService {
@@ -19,14 +24,16 @@ public class BarcodeService {
 
     private final WebClient openFoodFactsWebClient;
     private final ProductCacheRepository productCacheRepository;
+    private final ProductCacheWriter productCacheWriter;
 
     public BarcodeService(WebClient openFoodFactsWebClient,
-                          ProductCacheRepository productCacheRepository) {
+                          ProductCacheRepository productCacheRepository,
+                          ProductCacheWriter productCacheWriter) {
         this.openFoodFactsWebClient = openFoodFactsWebClient;
         this.productCacheRepository = productCacheRepository;
+        this.productCacheWriter = productCacheWriter;
     }
 
-    @Transactional(readOnly = true)
     public BarcodeDtos.LookupResult lookup(String barcode) {
         String code = barcode == null ? "" : barcode.trim();
         if (!BARCODE.matcher(code).matches()) {
@@ -52,7 +59,7 @@ public class BarcodeService {
         if (payload == null || payload.path("status").asInt(0) != 1) {
             throw new BadRequestException("Product not found for this barcode");
         }
-        productCacheRepository.save(new ProductCache(code, payload));
+        productCacheWriter.write(code, payload);
         return toResult(code, payload, false);
     }
 
