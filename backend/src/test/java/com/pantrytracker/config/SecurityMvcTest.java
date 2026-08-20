@@ -196,6 +196,33 @@ class SecurityMvcTest {
     }
 
     @Test
+    void unauthenticatedMeReturns401() throws Exception {
+        mockMvc.perform(get("/api/auth/me"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void invalidBearerOnMeReturns401() throws Exception {
+        mockMvc.perform(get("/api/auth/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer garbage-token"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void authenticatedMeReturnsTheCurrentUser() throws Exception {
+        User user = userWithId("me@example.com");
+        when(authService.me(any()))
+                .thenReturn(new AuthDtos.UserView(user.getId(), "me@example.com", "Me", "USER"));
+
+        mockMvc.perform(get("/api/auth/me")
+                        .with(authentication(authed(user))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email").value("me@example.com"))
+                .andExpect(jsonPath("$.displayName").value("Me"))
+                .andExpect(jsonPath("$.role").value("USER"));
+    }
+
+    @Test
     void optionsPreflightIsPermitted() throws Exception {
         mockMvc.perform(options("/api/items")
                         .header(HttpHeaders.ORIGIN, "http://localhost:5173")

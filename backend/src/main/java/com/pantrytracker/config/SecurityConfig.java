@@ -61,9 +61,16 @@ public class SecurityConfig {
                 // Preflight requests are handled by the CORS filter; permit
                 // them explicitly so the security chain never rejects them.
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                // The ONLY public endpoints: auth (register/login/refresh),
-                // the minimal liveness probe, and the servlet error path.
-                .requestMatchers("/api/auth/**", "/api/health", "/error").permitAll()
+                // The ONLY public endpoints: the auth entry points that need
+                // to work without an authenticated principal (login/register/
+                // refresh/logout), the minimal liveness probe, and the servlet
+                // error path. Everything else — including GET /api/auth/me —
+                // requires authentication.
+                .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/auth/register").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/auth/refresh").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/auth/logout").permitAll()
+                .requestMatchers("/api/health", "/error").permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated())
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
